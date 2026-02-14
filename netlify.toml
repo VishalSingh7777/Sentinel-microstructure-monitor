@@ -1,6 +1,7 @@
 [build]
-  command = "npm run build"
-  publish = "dist"
+  base = "sentinel-production-microstructure-monitor"
+  command = "npm install && npm run build"
+  publish = "sentinel-production-microstructure-monitor/dist"
 
 [[redirects]]
   from = "/*"
