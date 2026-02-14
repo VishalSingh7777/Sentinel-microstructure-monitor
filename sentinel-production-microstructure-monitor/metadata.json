@@ -1,0 +1,5 @@
+{
+  "name": "SENTINEL Production Microstructure Monitor",
+  "description": "A production-grade institutional market monitoring system that detects structural fragility in real-time using Binance WebSocket feeds and proprietary analytics engines.",
+  "requestFramePermissions": []
+}
