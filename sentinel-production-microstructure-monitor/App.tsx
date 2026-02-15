@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   NormalizedMarketTick, SignalOutput, StressScore, CausalSequence, 
@@ -32,6 +31,7 @@ const App: React.FC = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
+  const [isAppReady, setIsAppReady] = useState(false);
 
   const analyticsRef = useRef<AnalyticsEngine>(new AnalyticsEngine());
   const audioRef = useRef<AudioEngine>(new AudioEngine());
@@ -63,12 +63,12 @@ const App: React.FC = () => {
   const handleLiveTick = useCallback((tick: NormalizedMarketTick) => {
     const result = analyticsRef.current.processTick(tick);
     setLastTick(tick);
+    setIsAppReady(true);
     setSignals(result.signals);
     setStress(result.stress);
     setCausal(result.causal);
     setTrace(result.trace);
     
-    // Update Audio Engine with latest stress score
     if (result.stress) {
       audioRef.current.setStress(result.stress.score);
     }
@@ -136,7 +136,6 @@ const App: React.FC = () => {
     setCausal(result.causal);
     setTrace(result.trace);
 
-    // Update Audio Engine with simulated stress score
     if (result.stress) {
       audioRef.current.setStress(result.stress.score);
     }
@@ -164,11 +163,11 @@ const App: React.FC = () => {
     setCriticalLog([]);
     setTrace(null);
     setLastTick(null);
+    setIsAppReady(false);
     setStress(null);
     setSignals(null);
     setCausal(null);
 
-    // Audio engine state persists, but we might want to reset the frequency
     audioRef.current.setStress(0);
 
     if (mode === 'LIVE') {
@@ -212,12 +211,23 @@ const App: React.FC = () => {
     }
   }, [simStep, mode, historicalPoints, runHistoryStep]);
 
-  // Clean up audio on unmount
   useEffect(() => {
     return () => {
       audioRef.current.disable();
     }
   }, []);
+
+  if (!isAppReady && mode === 'LIVE') {
+    return (
+      <div className="min-h-screen bg-[#0a0e14] flex flex-col items-center justify-center gap-6">
+        <div className="w-16 h-16 border-2 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin" />
+        <div className="flex flex-col items-center gap-2">
+          <span className="text-cyan-400 font-mono text-sm uppercase tracking-[0.3em]">Sentinel</span>
+          <span className="text-gray-600 font-mono text-[10px] uppercase tracking-widest animate-pulse">Connecting to Binance...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col p-4 gap-4 max-w-[1920px] mx-auto overflow-hidden">
@@ -452,7 +462,6 @@ const App: React.FC = () => {
 
              {/* Forensic Review Hub */}
              <div className="col-span-12 lg:col-span-7 bg-[#151a23] border border-gray-800 rounded-xl p-5 flex flex-col overflow-hidden shadow-2xl relative">
-                {/* Decorative glow positioned behind content */}
                 <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 blur-[80px] rounded-full pointer-events-none z-0" />
                 
                 <div className="flex justify-between items-center mb-5 relative z-10">
