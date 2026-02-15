@@ -14,6 +14,44 @@ import { TimelineChart } from './components/TimelineChart';
 import { HistoricalDataLoader, HistoricalDataPoint } from './services/HistoricalDataLoader';
 import { ExplainabilityLayer } from './components/ExplainabilityLayer';
 
+// ── Error Boundary ───────────────────────────────────────────────────────────
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: string }
+> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: '' };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error: String(error?.message || error) };
+  }
+  componentDidCatch(error: any, info: any) {
+    console.error('[Sentinel] Caught by ErrorBoundary:', error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-[#0a0e14] flex flex-col items-center justify-center gap-6">
+          <div className="w-3 h-3 rounded-full bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.8)]" />
+          <div className="flex flex-col items-center gap-3 max-w-md text-center">
+            <span className="text-red-400 font-mono text-sm uppercase tracking-[0.3em]">System Error</span>
+            <span className="text-gray-600 font-mono text-[10px]">{this.state.error}</span>
+            <button
+              onClick={() => this.setState({ hasError: false, error: '' })}
+              className="mt-4 px-6 py-2 bg-gray-800 text-gray-300 font-mono text-xs rounded border border-gray-700 hover:border-gray-500 transition-all uppercase tracking-widest"
+            >
+              Reinitialize
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const App: React.FC = () => {
   const [mode, setMode] = useState<'LIVE' | 'HISTORICAL'>('LIVE');
   const [lastTick, setLastTick] = useState<NormalizedMarketTick | null>(null);
@@ -73,10 +111,10 @@ const App: React.FC = () => {
       setTrace(result.trace);
       if (result.stress) audioRef.current.setStress(result.stress.score);
       if (result.criticalEvent) logCriticalEvent(result.criticalEvent);
-      setTimelineData(prev => [...prev, { 
-        timestamp: tick.exchange_timestamp, 
-        price: tick.price, 
-        stress: result.stress.score 
+      setTimelineData(prev => [...prev, {
+        timestamp: tick.exchange_timestamp,
+        price: tick.price,
+        stress: result.stress.score
       }].slice(-100));
     } catch (err) {
       console.error('[Sentinel] handleLiveTick error:', err);
@@ -131,7 +169,12 @@ const App: React.FC = () => {
       if (result.stress) audioRef.current.setStress(result.stress.score);
       if (result.criticalEvent && !isSeeking) logCriticalEvent(result.criticalEvent);
       if (!isSeeking) {
-        setTimelineData(prev => [...prev, { timestamp: tick.exchange_timestamp, price: tick.price, stress: result.stress.score, label: point.close < point.open * 0.95 ? 'VOLATILITY SPIKE' : null }].slice(-100));
+        setTimelineData(prev => [...prev, {
+          timestamp: tick.exchange_timestamp,
+          price: tick.price,
+          stress: result.stress.score,
+          label: point.close < point.open * 0.95 ? 'VOLATILITY SPIKE' : null
+        }].slice(-100));
       }
     } catch (err) {
       console.error('[Sentinel] runHistoryStep error at index', stepIndex, err);
@@ -169,16 +212,13 @@ const App: React.FC = () => {
     };
   }, [mode, handleLiveTick, loadCovidData]);
 
-  // KEY FIX: Batched playback timer — prevents browser crash at high speeds
+  // Batched playback — max 20 UI renders/sec regardless of speed
   useEffect(() => {
     clearInterval(simTimerRef.current);
     if (mode !== 'HISTORICAL' || isPaused || historicalPoints.length === 0) return;
 
-    // At any speed, cap UI redraws to max 20/second (every 50ms)
-    // Process multiple steps per interval at high speeds — engine stays accurate, UI stays stable
     const RENDER_CAP_MS = 50;
     const stepsPerTick = Math.max(1, Math.round(playbackSpeed * RENDER_CAP_MS / 1000));
-    const intervalMs = RENDER_CAP_MS;
 
     simTimerRef.current = setInterval(() => {
       if (isPausedRef.current) return;
@@ -191,7 +231,6 @@ const App: React.FC = () => {
       let finalStep = simStepRef.current;
       let reachedEnd = false;
 
-      // Process N steps but only commit UI once
       for (let i = 0; i < stepsPerTick; i++) {
         const nextStep = simStepRef.current + 1;
         if (nextStep >= points.length) { reachedEnd = true; break; }
@@ -205,7 +244,9 @@ const App: React.FC = () => {
           lastTick = tick;
           lastPoint = point;
           if (result.criticalEvent) logCriticalEvent(result.criticalEvent);
-        } catch(e) { console.error('[Sentinel] batch step error', e); }
+        } catch(e) {
+          console.error('[Sentinel] batch step error at', finalStep, e);
+        }
       }
 
       if (reachedEnd) {
@@ -214,7 +255,6 @@ const App: React.FC = () => {
         return;
       }
 
-      // Single React render for the whole batch
       if (lastResult && lastTick && lastPoint) {
         setSimStep(finalStep);
         setLastTick(lastTick);
@@ -223,20 +263,20 @@ const App: React.FC = () => {
         setCausal(lastResult.causal);
         setTrace(lastResult.trace);
         if (lastResult.stress) audioRef.current.setStress(lastResult.stress.score);
-        setTimelineData(prev => [...prev, { 
-          timestamp: lastTick!.exchange_timestamp, 
-          price: lastTick!.price, 
+        setTimelineData(prev => [...prev, {
+          timestamp: lastTick!.exchange_timestamp,
+          price: lastTick!.price,
           stress: lastResult.stress.score,
           label: lastPoint!.close < lastPoint!.open * 0.95 ? 'VOLATILITY SPIKE' : null
         }].slice(-100));
       }
-    }, intervalMs);
+    }, RENDER_CAP_MS);
 
     return () => clearInterval(simTimerRef.current);
   }, [mode, isPaused, playbackSpeed, historicalPoints, historyLoader, logCriticalEvent]);
 
   useEffect(() => {
-    return () => { audioRef.current.disable(); }
+    return () => { audioRef.current.disable(); };
   }, []);
 
   if (!isAppReady && mode === 'LIVE') {
@@ -493,7 +533,7 @@ const App: React.FC = () => {
       <div className="px-6 pb-6">
         <ExplainabilityLayer trace={trace} stress={stress} signals={signals} />
       </div>
-      
+
       <style>{`
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.02); }
@@ -504,4 +544,10 @@ const App: React.FC = () => {
   );
 };
 
-export default App;
+const WrappedApp: React.FC = () => (
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
+
+export default WrappedApp;
