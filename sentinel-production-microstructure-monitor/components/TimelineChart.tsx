@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { 
   ResponsiveContainer, ComposedChart, Area, Line, 
@@ -12,8 +11,33 @@ interface TimelineChartProps {
 }
 
 export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
-  // Extract specific simulation labels for markers
-  const markers = data.filter(d => d.label);
+  // Sanitize before recharts sees it — NaN/Infinity causes "Invariant failed" crash
+  const cleanData = data.filter(d => 
+    d != null &&
+    typeof d.price === 'number' && isFinite(d.price) && !isNaN(d.price) && d.price > 0 &&
+    typeof d.stress === 'number' && isFinite(d.stress) && !isNaN(d.stress) &&
+    typeof d.timestamp === 'number' && isFinite(d.timestamp)
+  );
+
+  const markers = cleanData.filter(d => d.label);
+
+  // Compute explicit price domain from clean data — never use 'auto' with potentially bad data
+  const prices = cleanData.map(d => d.price);
+  const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
+  const maxPrice = prices.length > 0 ? Math.max(...prices) : 1;
+  const pricePadding = (maxPrice - minPrice) * 0.05 || 100;
+  const priceDomain: [number, number] = [
+    Math.floor(minPrice - pricePadding),
+    Math.ceil(maxPrice + pricePadding)
+  ];
+
+  if (cleanData.length === 0) {
+    return (
+      <div className="w-full h-[400px] bg-[#151a23] rounded-xl p-4 border border-gray-800 relative flex items-center justify-center">
+        <span className="text-gray-700 font-mono text-[10px] uppercase tracking-widest">Awaiting market data...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-[400px] bg-[#151a23] rounded-xl p-4 border border-gray-800 relative">
@@ -21,7 +45,7 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
         Market Structure vs. Price
       </h2>
       <ResponsiveContainer width="100%" height="90%">
-        <ComposedChart data={data}>
+        <ComposedChart data={cleanData}>
           <defs>
             <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#4b5563" stopOpacity={0.3} />
@@ -44,7 +68,7 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
           
           <YAxis 
             yAxisId="price" 
-            domain={['auto', 'auto']}
+            domain={priceDomain}
             stroke="#9ca3af"
             fontSize={10}
             fontFamily="JetBrains Mono"
@@ -85,11 +109,9 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
             isAnimationActive={false}
           />
 
-          {/* Zones */}
           <ReferenceArea yAxisId="stress" y1={70} y2={85} fill="#f97316" fillOpacity={0.05} />
           <ReferenceArea yAxisId="stress" y1={85} y2={100} fill="#dc2626" fillOpacity={0.05} />
 
-          {/* Simulation Narrative Markers */}
           {markers.map((m, idx) => (
             <ReferenceLine
               key={idx}
@@ -108,10 +130,10 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
             />
           ))}
 
-          {data.find(d => d.pointOfNoReturn) && (
+          {cleanData.find(d => d.pointOfNoReturn) && (
             <ReferenceLine
               yAxisId="stress"
-              x={data.find(d => d.pointOfNoReturn)?.timestamp}
+              x={cleanData.find(d => d.pointOfNoReturn)?.timestamp}
               stroke="#dc2626"
               strokeDasharray="5 5"
               label={{ value: 'INSTABILITY LOCK-IN', position: 'top', fill: '#dc2626', fontSize: 10, fontWeight: 'bold' }}
