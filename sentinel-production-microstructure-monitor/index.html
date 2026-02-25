@@ -1,57 +1,31 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-  <title>SENTINEL | Market Microstructure Monitoring</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-  <style>
-    body {
-      background-color: #0a0e14;
-      color: #f9fafb;
-      font-family: 'Inter', sans-serif;
-      margin: 0;
-      overflow-x: hidden;
-    }
-    .font-mono {
-      font-family: 'JetBrains Mono', monospace;
-    }
-    ::-webkit-scrollbar {
-      width: 6px;
-    }
-    ::-webkit-scrollbar-track {
-      background: #0a0e14;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: #374151;
-      border-radius: 3px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-      background: #4b5563;
-    }
-  </style>
-<script type="importmap">
-{
-  "imports": {
-    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
-    "react/": "https://esm.sh/react@^19.2.4/",
-    "react": "https://esm.sh/react@^19.2.4",
-    "recharts": "https://esm.sh/recharts@^3.7.0",
-    "vite": "https://esm.sh/vite@^7.3.1",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.3"
-  }
-}
-</script>
-<link rel="stylesheet" href="/index.css">
+  <title>SENTINEL | Market Microstructure Monitor</title>
+
+  <!--
+    REMOVED: cdn.tailwindcss.com  → Caused FOUC on cold load (Bug 3)
+    REMOVED: importmap (esm.sh)   → Conflicted with Vite bundle (Bug 1)
+    REMOVED: /index.css link      → File didn't exist, caused 404 (Bug 2)
+
+    Tailwind is now processed at BUILD TIME via PostCSS (tailwind.config.js).
+    The index.css entry is imported in index.tsx so Vite handles it correctly.
+  -->
+
+  <!-- Google Fonts — preconnect reduces TTFB for font files -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap"
+    rel="stylesheet"
+  />
 </head>
 <body>
   <div id="root"></div>
-  <!-- Added entry point for local execution -->
+  <!-- Vite resolves this at build time — DO NOT add importmap or CDN scripts -->
   <script type="module" src="/index.tsx"></script>
 </body>
 </html>

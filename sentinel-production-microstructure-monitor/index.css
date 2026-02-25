@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Body defaults ────────────────────────────────────────── */
+body {
+  background-color: #0a0e14;
+  color: #f9fafb;
+  font-family: 'Inter', sans-serif;
+  margin: 0;
+  overflow-x: hidden;
+}
+
+/* ── JetBrains Mono alias ─────────────────────────────────── */
+.font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ── Custom scrollbar ─────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0a0e14; }
+::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+/* ── Tailwind animate-in shim ─────────────────────────────── */
+/* Tailwind v3 doesn't include animate-in/slide-in natively.  */
+/* These are minimal re-implementations of the Tailwind v4    */
+/* animation utilities used in App.tsx.                        */
+@keyframes slide-in-from-top { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes slide-in-from-left { from { transform: translateX(-8px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.animate-in { animation-fill-mode: both; }
+.slide-in-from-top { animation-name: slide-in-from-top; }
+.slide-in-from-left { animation-name: slide-in-from-left; }
+.fade-in { animation-name: fade-in; }
+.duration-300 { animation-duration: 300ms; }
+.duration-500 { animation-duration: 500ms; }
+.duration-700 { animation-duration: 700ms; }
+
+/* ── Custom scrollbar utility ─────────────────────────────── */
+.custom-scrollbar::-webkit-scrollbar { width: 4px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.02); }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #374151; }
+
+/* ── Accent color for range input ─────────────────────────── */
+input[type="range"].accent-amber-500 { accent-color: #f59e0b; }

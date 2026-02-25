@@ -197,10 +197,22 @@ const App: React.FC = () => {
     audioRef.current.setStress(0);
 
     if (mode === 'LIVE') {
+      // FIX (Bug 6): start() is async (runs syncClock + opens 3 WebSockets).
+      // Previously we called start() fire-and-forget then immediately set
+      // CONNECTED — the UI showed "STREAMING" while still doing clock sync.
+      // Now: status stays DISCONNECTED until BinanceService actually emits
+      // the first valid tick, confirmed via the onStatusChange callback.
       setConnectionStatus('DISCONNECTED');
-      binanceRef.current = new BinanceService(handleLiveTick);
-      binanceRef.current.start();
-      setConnectionStatus('CONNECTED');
+      binanceRef.current = new BinanceService(
+        handleLiveTick,
+        (status) => setConnectionStatus(status)
+      );
+      // Fire-and-forget is intentional here — we do NOT await.
+      // Status is updated by the callback above when first tick arrives.
+      binanceRef.current.start().catch((err) => {
+        console.error('[Sentinel] BinanceService.start() failed:', err);
+        setConnectionStatus('DISCONNECTED');
+      });
     } else {
       setConnectionStatus('HISTORICAL');
       loadCovidData();
