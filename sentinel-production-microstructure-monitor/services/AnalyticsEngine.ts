@@ -19,6 +19,7 @@ export class AnalyticsEngine {
   private previousSignalsAligned = 0;
   private lastTrace: DecisionTrace | null = null;
   
+  private previousFlowValue = 0;
   private triggerOrder: { signal: SignalType, timestamp: number, initialValue: number }[] = [];
   
   private readonly weights = {
@@ -37,6 +38,7 @@ export class AnalyticsEngine {
     this.previousSignalsAligned = 0;
     this.triggerOrder = [];
     this.lastTrace = null;
+    this.previousFlowValue = 0;
   }
 
   getLastTrace(): DecisionTrace | null {
@@ -93,10 +95,28 @@ export class AnalyticsEngine {
 
   private processFlow(tick: NormalizedMarketTick): SignalOutput {
     const totalVol = safeNum(tick.trades.buy_volume + tick.trades.sell_volume, 0);
-    if (totalVol === 0) return this.defaultSignal(SignalType.FLOW, tick.processing_timestamp);
-    
+
+    // When this 100ms window had no trades, hold the last real value.
+    // Previously this returned defaultSignal("Insufficient data") which
+    // caused the flicker — alternating between a real number and 0 every tick.
+    if (totalVol === 0) {
+      const prev = this.previousFlowValue;
+      const confidence = this.determineConfidence(prev > 0 ? 1 : 0, 2.0, 0.5);
+      return {
+        name: SignalType.FLOW,
+        value: Math.round(prev),
+        severity: this.getSeverity(prev),
+        triggered: prev > 65,
+        raw_metrics: { 'Sell %': '50.0%', 'Imbalance': '1.00' },
+        explanation: prev > 65 ? 'Aggressive market selling detected.' : 'Transaction flow is balanced.',
+        confidence,
+        timestamp: tick.processing_timestamp
+      };
+    }
+
     const sellRatio = safeNum(tick.trades.sell_volume / totalVol, 0.5);
     const risk = safeNum(Math.max(0, (sellRatio - 0.5) * 200), 0);
+    this.previousFlowValue = risk; // save for next empty tick
 
     const confidence = this.determineConfidence(totalVol, 2.0, 0.5);
 
@@ -107,7 +127,7 @@ export class AnalyticsEngine {
       triggered: risk > 65,
       raw_metrics: { 'Sell %': (sellRatio * 100).toFixed(1) + '%', 'Imbalance': safeNum(sellRatio / (1 - sellRatio || 0.01), 1).toFixed(2) },
       explanation: risk > 65 ? 'Aggressive market selling detected.' : 'Transaction flow is balanced.',
-      confidence: confidence,
+      confidence,
       timestamp: tick.processing_timestamp
     };
   }
