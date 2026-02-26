@@ -157,7 +157,10 @@ const App: React.FC = () => {
             seekPoints.push({ timestamp: hTick.exchange_timestamp, price: hTick.price, stress: res.stress.score, label: hPoint.close < hPoint.open * 0.95 ? 'MAJOR DROP' : null });
           }
         }
-        setTimelineData(seekPoints);
+        // Guard: recharts crashes with 1 point (XAxis domain [t,t] → step=0 → invariant).
+        // If seek produced fewer than 2 points (e.g. seeking to position 0), pass empty
+        // so the chart shows the placeholder rather than throwing.
+        setTimelineData(seekPoints.length >= 2 ? seekPoints : []);
       }
 
       const result = analyticsRef.current.processTick(tick);
