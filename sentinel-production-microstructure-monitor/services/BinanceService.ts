@@ -1,83 +1,75 @@
+
 import { NormalizedMarketTick, Trade } from '../types';
 
 export class BinanceService {
   private tradeWS: WebSocket | null = null;
   private depthWS: WebSocket | null = null;
   private tickerWS: WebSocket | null = null;
-
+  
   private lastPrice = 0;
   private volume24h = 0;
   private bids: [number, number][] = [];
   private asks: [number, number][] = [];
   private recentTrades: Trade[] = [];
-
+  
   private lastExchangeTime = 0;
   private lastReceivedTime = 0;
-  private clockOffset = 0;
-
+  private clockOffset = 0; // Difference between Binance server time and local time
+  
   private onTickCallback: (tick: NormalizedMarketTick) => void;
-  private onStatusChange: (status: 'CONNECTED' | 'DISCONNECTED') => void;
-  private intervalId: ReturnType<typeof setInterval> | null = null;
-  private isRunning = false;
+  private intervalId: any = null;
 
+  // Use the recommended port 9443 for better stability
   private readonly WS_BASE_URL = 'wss://stream.binance.com:9443/ws';
 
-  constructor(
-    onTick: (tick: NormalizedMarketTick) => void,
-    onStatusChange: (status: 'CONNECTED' | 'DISCONNECTED') => void = () => {}
-  ) {
+  constructor(onTick: (tick: NormalizedMarketTick) => void) {
     this.onTickCallback = onTick;
-    this.onStatusChange = onStatusChange;
   }
 
   /**
-   * FIX (Bug 7): syncClock now uses AbortController with a 4-second timeout.
-   * Previously a slow Netlify edge→Binance round trip could hang indefinitely,
-   * blocking all three WebSocket connections from opening.
+   * Synchronizes the local clock with Binance server time to ensure
+   * latency calculations (received_timestamp - exchange_timestamp) are accurate.
    */
   private async syncClock(): Promise<void> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
     try {
       const start = Date.now();
-      const response = await fetch('https://api.binance.com/api/v3/time', {
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (!response.ok) throw new Error('Non-OK response from /api/v3/time');
+      const response = await fetch('https://api.binance.com/api/v3/time');
+      if (!response.ok) throw new Error('Time sync failed');
       const end = Date.now();
       const data = await response.json();
+      
+      // Calculate Round Trip Time (RTT) to estimate one-way latency
       const rtt = (end - start) / 2;
+      // offset = serverTime - (localTimeAtServerArrival)
       this.clockOffset = data.serverTime - (end - rtt);
-      console.log(`[Binance] Clock synchronized. Offset: ${this.clockOffset}ms`);
+      
+      console.log(`[Binance] Clock Synchronized. Offset: ${this.clockOffset}ms`);
     } catch (err) {
-      clearTimeout(timeoutId);
-      // Non-fatal: fall back to local time. Latency display may be slightly off.
-      console.warn('[Binance] Clock sync skipped (timeout or error). Latency display may be inaccurate.', err);
+      console.warn('[Binance] Clock sync failed, falling back to local time. Latency display may be inaccurate.');
       this.clockOffset = 0;
     }
   }
 
   async start(): Promise<void> {
-    this.isRunning = true;
-    console.log('[Binance] Initializing pipeline...');
-
-    // Clock sync with timeout — never blocks WebSocket startup for >4s
+    console.log('[Binance] Initializing High-Speed Pipeline...');
+    
+    // Perform clock sync before starting streams
     await this.syncClock();
-
-    if (!this.isRunning) return; // stop() may have been called during sync
-
+    
     this.connectTrades();
     this.connectDepth();
     this.connectTicker();
-
+    
     if (this.intervalId) clearInterval(this.intervalId);
-    this.intervalId = setInterval(() => this.emitTick(), 100);
+    
+    // Increased frequency from 1000ms to 100ms for institutional-grade responsiveness
+    this.intervalId = setInterval(() => {
+      this.emitTick();
+    }, 100);
   }
 
   stop(): void {
-    this.isRunning = false;
-    console.log('[Binance] Stopping feed...');
+    console.log('[Binance] Stopping Live Feed...');
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
@@ -88,10 +80,9 @@ export class BinanceService {
   private closeSockets(): void {
     [this.tradeWS, this.depthWS, this.tickerWS].forEach(ws => {
       if (ws) {
-        ws.onclose = null;
+        ws.onclose = null; 
         ws.onerror = null;
-        ws.onmessage = null;
-        try { ws.close(); } catch {}
+        ws.close();
       }
     });
     this.tradeWS = null;
@@ -100,195 +91,110 @@ export class BinanceService {
   }
 
   private connectTrades(): void {
-    if (!this.isRunning) return;
-    try {
-      this.tradeWS = new WebSocket(`${this.WS_BASE_URL}/btcusdt@aggTrade`);
-    } catch (err) {
-      console.error('[Binance] Failed to open trade WebSocket:', err);
-      return;
-    }
-
-    /**
-     * FIX (Bug 5): All onmessage handlers are now wrapped in try/catch.
-     * Binance sends ping frames (empty strings), rate-limit envelopes, and
-     * connection notices — none of which are valid JSON. Without try/catch,
-     * any of these throws an unhandled error that propagates to onerror and
-     * drops the connection. This was especially likely on Netlify edge nodes
-     * where the initial ping frame often arrives before the first data frame.
-     */
+    this.tradeWS = new WebSocket(`${this.WS_BASE_URL}/btcusdt@aggTrade`);
     this.tradeWS.onmessage = (e) => {
-      try {
-        if (!e.data || typeof e.data !== 'string') return;
-        const data = JSON.parse(e.data);
-        if (!data || typeof data !== 'object') return;
-
-        if (data.E) {
-          this.lastExchangeTime = data.E;
-          this.lastReceivedTime = Date.now();
-        }
-        if (!data.p || !data.q) return; // not a trade message
-
-        const trade: Trade = {
-          id: data.a,
-          price: parseFloat(data.p),
-          quantity: parseFloat(data.q),
-          timestamp: data.T,
-          side: data.m ? 'sell' : 'buy',
-        };
-        if (!isFinite(trade.price) || !isFinite(trade.quantity)) return;
-
-        this.lastPrice = trade.price;
-        this.recentTrades.push(trade);
-        if (this.recentTrades.length > 5000) this.recentTrades.splice(0, 1000);
-      } catch (err) {
-        // Silently discard malformed frames — do NOT rethrow
-        console.debug('[Binance] Discarded malformed trade frame:', err);
+      const data = JSON.parse(e.data);
+      if (data.E) {
+        this.lastExchangeTime = data.E;
+        this.lastReceivedTime = Date.now();
       }
-    };
 
-    this.tradeWS.onerror = (err) => {
-      console.error('[Binance] Trade WS error:', err);
+      const trade: Trade = {
+        id: data.a,
+        price: parseFloat(data.p),
+        quantity: parseFloat(data.q),
+        timestamp: data.T,
+        side: data.m ? 'sell' : 'buy'
+      };
+      this.lastPrice = trade.price;
+      this.recentTrades.push(trade);
+      
+      // Prevent memory overflow on extreme volatility
+      if (this.recentTrades.length > 5000) this.recentTrades.splice(0, 1000);
     };
-
+    
     this.tradeWS.onclose = () => {
-      if (this.isRunning) {
-        console.warn('[Binance] Trade WS closed — reconnecting in 3s...');
+      if (this.intervalId) {
         setTimeout(() => this.connectTrades(), 3000);
       }
     };
   }
 
   private connectDepth(): void {
-    if (!this.isRunning) return;
-    try {
-      // 100ms depth updates — essential for microstructure analysis
-      this.depthWS = new WebSocket(`${this.WS_BASE_URL}/btcusdt@depth20@100ms`);
-    } catch (err) {
-      console.error('[Binance] Failed to open depth WebSocket:', err);
-      return;
-    }
-
+    // 100ms depth updates are essential for microstructure analysis
+    this.depthWS = new WebSocket(`${this.WS_BASE_URL}/btcusdt@depth20@100ms`);
     this.depthWS.onmessage = (e) => {
-      try {
-        if (!e.data || typeof e.data !== 'string') return;
-        const data = JSON.parse(e.data);
-        if (!data || !Array.isArray(data.bids) || !Array.isArray(data.asks)) return;
-
-        this.bids = data.bids
-          .map((b: any) => [parseFloat(b[0]), parseFloat(b[1])] as [number, number])
-          .filter(([p, q]: [number, number]) => isFinite(p) && isFinite(q) && p > 0 && q > 0);
-
-        this.asks = data.asks
-          .map((a: any) => [parseFloat(a[0]), parseFloat(a[1])] as [number, number])
-          .filter(([p, q]: [number, number]) => isFinite(p) && isFinite(q) && p > 0 && q > 0);
-      } catch (err) {
-        console.debug('[Binance] Discarded malformed depth frame:', err);
-      }
+      const data = JSON.parse(e.data);
+      this.bids = data.bids.map((b: any) => [parseFloat(b[0]), parseFloat(b[1])]);
+      this.asks = data.asks.map((a: any) => [parseFloat(a[0]), parseFloat(a[1])]);
     };
-
-    this.depthWS.onerror = (err) => {
-      console.error('[Binance] Depth WS error:', err);
-    };
-
     this.depthWS.onclose = () => {
-      if (this.isRunning) {
-        console.warn('[Binance] Depth WS closed — reconnecting in 3s...');
-        setTimeout(() => this.connectDepth(), 3000);
-      }
+      if (this.intervalId) setTimeout(() => this.connectDepth(), 3000);
     };
   }
 
   private connectTicker(): void {
-    if (!this.isRunning) return;
-    try {
-      this.tickerWS = new WebSocket(`${this.WS_BASE_URL}/btcusdt@ticker`);
-    } catch (err) {
-      console.error('[Binance] Failed to open ticker WebSocket:', err);
-      return;
-    }
-
+    this.tickerWS = new WebSocket(`${this.WS_BASE_URL}/btcusdt@ticker`);
     this.tickerWS.onmessage = (e) => {
-      try {
-        if (!e.data || typeof e.data !== 'string') return;
-        const data = JSON.parse(e.data);
-        if (!data || !data.v) return;
-        const vol = parseFloat(data.v);
-        if (isFinite(vol)) this.volume24h = vol;
-      } catch (err) {
-        console.debug('[Binance] Discarded malformed ticker frame:', err);
-      }
+      const data = JSON.parse(e.data);
+      this.volume24h = parseFloat(data.v);
     };
-
-    this.tickerWS.onerror = (err) => {
-      console.error('[Binance] Ticker WS error:', err);
-    };
-
     this.tickerWS.onclose = () => {
-      if (this.isRunning) {
-        setTimeout(() => this.connectTicker(), 3000);
-      }
+      if (this.intervalId) setTimeout(() => this.connectTicker(), 3000);
     };
   }
 
   private emitTick(): void {
-    if (this.lastPrice === 0 || this.bids.length === 0 || this.asks.length === 0) return;
-    if (!isFinite(this.lastPrice) || this.lastPrice <= 0) return;
-
-    try {
-      const buyTrades = this.recentTrades.filter(t => t.side === 'buy');
-      const sellTrades = this.recentTrades.filter(t => t.side === 'sell');
-      const largeThreshold = 0.5;
-
-      const calculateVWAP = (levels: [number, number][]) => {
-        let valueSum = 0;
-        let weightSum = 0;
-        for (const [p, q] of levels) {
-          if (isFinite(p) && isFinite(q) && q > 0) {
-            valueSum += p * q;
-            weightSum += q;
-          }
-        }
-        return weightSum > 0 ? valueSum / weightSum : 0;
-      };
-
-      const bidVWAP = calculateVWAP(this.bids) || this.bids[0]?.[0] || 0;
-      const askVWAP = calculateVWAP(this.asks) || this.asks[0]?.[0] || 0;
-      if (!bidVWAP || !askVWAP) return;
-
-      const effectiveSpread = askVWAP - bidVWAP;
-      const midPrice = (this.bids[0][0] + this.asks[0][0]) / 2;
-      const spreadBps = (effectiveSpread / midPrice) * 10000;
-
-      const tick: NormalizedMarketTick = {
-        exchange_timestamp: this.lastExchangeTime,
-        received_timestamp: this.lastReceivedTime + this.clockOffset,
-        processing_timestamp: Date.now() + this.clockOffset,
-        price: this.lastPrice,
-        volume_24h: this.volume24h,
-        bids: this.bids,
-        asks: this.asks,
-        trades: {
-          buy_volume: buyTrades.reduce((s, t) => s + t.quantity, 0),
-          sell_volume: sellTrades.reduce((s, t) => s + t.quantity, 0),
-          buy_count: buyTrades.length,
-          sell_count: sellTrades.length,
-          large_trades: this.recentTrades.filter(t => t.quantity >= largeThreshold),
-        },
-        mid_price: midPrice,
-        spread: this.asks[0][0] - this.bids[0][0],
-        spread_bps: isFinite(spreadBps) ? spreadBps : 0,
-        total_depth:
-          this.bids.reduce((s, b) => s + b[1], 0) +
-          this.asks.reduce((s, a) => s + a[1], 0),
-        is_valid: true,
-        data_quality: 'GOOD',
-      };
-
-      this.onStatusChange('CONNECTED');
-      this.onTickCallback(tick);
-      this.recentTrades = [];
-    } catch (err) {
-      console.error('[Binance] emitTick error:', err);
+    if (this.lastPrice === 0 || this.bids.length === 0 || this.asks.length === 0) {
+      return;
     }
+
+    const buyTrades = this.recentTrades.filter(t => t.side === 'buy');
+    const sellTrades = this.recentTrades.filter(t => t.side === 'sell');
+    const largeThreshold = 0.5;
+
+    const calculateVWAP = (levels: [number, number][]) => {
+      let valueSum = 0;
+      let weightSum = 0;
+      for (const [p, q] of levels) {
+        valueSum += p * q;
+        weightSum += q;
+      }
+      return weightSum > 0 ? valueSum / weightSum : 0;
+    };
+
+    const bidVWAP = calculateVWAP(this.bids) || this.bids[0][0];
+    const askVWAP = calculateVWAP(this.asks) || this.asks[0][0];
+    
+    const effectiveSpread = askVWAP - bidVWAP;
+    const midPrice = (this.bids[0][0] + this.asks[0][0]) / 2;
+    const spreadBps = (effectiveSpread / midPrice) * 10000;
+
+    const tick: NormalizedMarketTick = {
+      exchange_timestamp: this.lastExchangeTime,
+      // Apply clock offset to local arrival time for accurate latency calculation
+      received_timestamp: this.lastReceivedTime + this.clockOffset,
+      processing_timestamp: Date.now() + this.clockOffset,
+      price: this.lastPrice,
+      volume_24h: this.volume24h,
+      bids: this.bids,
+      asks: this.asks,
+      trades: {
+        buy_volume: buyTrades.reduce((s, t) => s + t.quantity, 0),
+        sell_volume: sellTrades.reduce((s, t) => s + t.quantity, 0),
+        buy_count: buyTrades.length,
+        sell_count: sellTrades.length,
+        large_trades: this.recentTrades.filter(t => t.quantity >= largeThreshold)
+      },
+      mid_price: midPrice,
+      spread: this.asks[0][0] - this.bids[0][0],
+      spread_bps: spreadBps,
+      total_depth: this.bids.reduce((s, b) => s + b[1], 0) + this.asks.reduce((s, a) => s + a[1], 0),
+      is_valid: true,
+      data_quality: 'GOOD'
+    };
+
+    this.onTickCallback(tick);
+    this.recentTrades = []; 
   }
 }
