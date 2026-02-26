@@ -31,7 +31,10 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
     Math.ceil(maxPrice + pricePadding)
   ];
 
-  if (cleanData.length === 0) {
+  // Guard: recharts XAxis with domain=['dataMin','dataMax'] gets [t,t] when only
+  // 1 point exists. getNiceTickValues(t,t) computes step=0 → t/0=Infinity →
+  // invariant(isFinite(step)) throws "Invariant failed". Require ≥2 points.
+  if (cleanData.length < 2) {
     return (
       <div className="w-full h-[400px] bg-[#151a23] rounded-xl p-4 border border-gray-800 relative flex items-center justify-center">
         <span className="text-gray-700 font-mono text-[10px] uppercase tracking-widest">Awaiting market data...</span>
