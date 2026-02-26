@@ -212,13 +212,16 @@ const App: React.FC = () => {
     };
   }, [mode, handleLiveTick, loadCovidData]);
 
-  // Batched playback — max 20 UI renders/sec regardless of speed
+  // Playback loop — three speeds only: 1×, 50×, 100×
+  // 1×  = 1 candle/sec  (1 step every 1000ms)
+  // 50× = 50 candles/sec (2 steps every 40ms)
+  // 100×= 100 candles/sec (5 steps every 50ms)
   useEffect(() => {
     clearInterval(simTimerRef.current);
     if (mode !== 'HISTORICAL' || isPaused || historicalPoints.length === 0) return;
 
-    const RENDER_CAP_MS = 50;
-    const stepsPerTick = Math.max(1, Math.round(playbackSpeed * RENDER_CAP_MS / 1000));
+    const intervalMs   = playbackSpeed === 1 ? 1000 : playbackSpeed === 50 ? 40 : 50;
+    const stepsPerTick = playbackSpeed === 1 ? 1    : playbackSpeed === 50 ? 2  : 5;
 
     simTimerRef.current = setInterval(() => {
       if (isPausedRef.current) return;
@@ -250,8 +253,12 @@ const App: React.FC = () => {
       }
 
       if (reachedEnd) {
-        setIsPaused(true);
-        isPausedRef.current = true;
+        // Auto-restart: reset to beginning and replay from scratch
+        analyticsRef.current.reset();
+        simStepRef.current = 0;
+        setSimStep(0);
+        setTimelineData([]);
+        setCriticalLog([]);
         return;
       }
 
@@ -270,7 +277,7 @@ const App: React.FC = () => {
           label: lastPoint!.close < lastPoint!.open * 0.95 ? 'VOLATILITY SPIKE' : null
         }].slice(-100));
       }
-    }, RENDER_CAP_MS);
+    }, intervalMs);
 
     return () => clearInterval(simTimerRef.current);
   }, [mode, isPaused, playbackSpeed, historicalPoints, historyLoader, logCriticalEvent]);
@@ -360,7 +367,7 @@ const App: React.FC = () => {
                 />
               </div>
               <div className="flex items-center gap-2 bg-[#0a0e14] rounded-lg p-1 border border-gray-800">
-                {[1, 5, 20, 50, 100].map(s => (
+                {[1, 50, 100].map(s => (
                   <button key={s} onClick={() => setPlaybackSpeed(s)} className={`px-2 py-1 text-[10px] font-bold rounded transition-colors ${playbackSpeed === s ? 'bg-amber-600 text-white shadow-lg shadow-amber-900/20' : 'text-gray-500 hover:text-gray-300'}`}>{s}x</button>
                 ))}
               </div>
