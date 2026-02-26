@@ -263,15 +263,27 @@ export class AnalyticsEngine {
     const confidence_reasons: Record<string, string> = {
       [SignalType.LIQUIDITY]:      `${this.liquidityBuffer.size()} depth samples (need ≥60 for HIGH)`,
       [SignalType.VOLATILITY]:     `${this.priceBuffer.size()} price ticks (need ≥50 for HIGH)`,
-      [SignalType.FLOW]:           `Based on volume density — need ≥2.0 BTC/s for HIGH`,
-      [SignalType.FORCED_SELLING]: `Based on block trade count — ≥3 blocks = HIGH`,
+      // FIX: was "BTC/s" — threshold is 2.0 BTC per 100ms tick, not per second (20 BTC/s would be wrong by 10×)
+      [SignalType.FLOW]:           `Volume this tick — need ≥2.0 BTC per tick for HIGH, ≥0.5 for MEDIUM`,
+      [SignalType.FORCED_SELLING]: `Block trade count — ≥3 blocks = HIGH, ≥1 = MEDIUM, 0 = LOW`,
     };
 
     const sorted   = [...weight_contributions].sort((a, b) => b.contribution - a.contribution);
     const dominant = sorted[0] ?? { signal: 'UNKNOWN', weight: 0, raw_value: 0, contribution: 0, pct_of_total: 0 };
 
+    // Build smoothing formula string so the final score is fully verifiable from the narrative alone
+    const smoothingFormula = `${alpha} × ${targetStress.toFixed(1)} + ${(1 - alpha).toFixed(2)} × ${this.previousStress.toFixed(1)} = ${smoothedStress.toFixed(1)}`;
+
+    // FIX: was "signal(s) triggered simultaneously" — "simultaneously" is wrong for single signals
+    // and plural handling was sloppy. Now correct singular/plural with no incorrect simultaneity claim.
+    const shockNote = activeSignals > 0
+      ? `Shock multiplier ${shockMultiplier.toFixed(2)}× applied (${activeSignals} ${activeSignals === 1 ? 'signal' : 'signals'} active), elevating score to ${targetStress.toFixed(1)}. `
+      : '';
+
+    const direction = targetStress > this.previousStress ? 'rising' : targetStress < this.previousStress ? 'falling' : 'flat';
+
     const audit_narrative = rawStress > 0
-      ? `Dominant contributor: ${dominant.signal} (${(dominant.weight * 100).toFixed(0)}% weight × ${dominant.raw_value} raw = ${dominant.contribution.toFixed(1)} pts, ${dominant.pct_of_total.toFixed(1)}% of raw score). Raw weighted score: ${rawStress.toFixed(1)} pts. ${activeSignals > 0 ? `Shock multiplier ${shockMultiplier.toFixed(2)}× applied because ${activeSignals} signal(s) triggered simultaneously, elevating score to ${targetStress.toFixed(1)}. ` : ''}Stress is ${targetStress > this.previousStress ? 'rising' : 'falling'}, so adaptive smoothing alpha = ${alpha} (${alpha === 0.35 ? 'fast-track — system escalates quickly' : 'slow-decay — system de-escalates conservatively'}). Final score: ${finalScore} (${level}). System confidence: ${globalConfidence}.`
+      ? `Dominant contributor: ${dominant.signal} (${(dominant.weight * 100).toFixed(0)}% weight × ${dominant.raw_value} raw = ${dominant.contribution.toFixed(1)} pts, ${dominant.pct_of_total.toFixed(1)}% of raw score). Raw weighted score: ${rawStress.toFixed(1)} pts. ${shockNote}Stress is ${direction}, so smoothing alpha = ${alpha} (${alpha === 0.35 ? 'fast-attack' : 'slow-decay'}). EMA: ${smoothingFormula} → rounded to ${finalScore} (${level}). System confidence: ${globalConfidence}.`
       : `All signals stable. Score: 0. System monitoring.`;
 
     const trace: DecisionTrace = {
@@ -348,7 +360,7 @@ export class AnalyticsEngine {
     tick: NormalizedMarketTick, stress: StressScore, causal: CausalSequence
   ): CriticalEvent | null {
     const levelUpgrade      = this.getStressRank(stress.level) > this.getStressRank(this.previousLevel)
-                           && this.getStressRank(stress.level) >= 2;
+                           && stress.score > 60;
     const alignmentIncrease = stress.signals_aligned > this.previousSignalsAligned && stress.score > 60;
 
     if (levelUpgrade || alignmentIncrease) {
