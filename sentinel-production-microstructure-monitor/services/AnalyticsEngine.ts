@@ -19,6 +19,7 @@ export class AnalyticsEngine {
   private previousSignalsAligned = 0;
   private lastTrace: DecisionTrace | null = null;
   
+  private previousFlowValue = 0;
   private triggerOrder: { signal: SignalType, timestamp: number, initialValue: number }[] = [];
   
   private readonly weights = {
@@ -37,6 +38,7 @@ export class AnalyticsEngine {
     this.previousSignalsAligned = 0;
     this.triggerOrder = [];
     this.lastTrace = null;
+    this.previousFlowValue = 0;
   }
 
   getLastTrace(): DecisionTrace | null {
@@ -93,10 +95,25 @@ export class AnalyticsEngine {
 
   private processFlow(tick: NormalizedMarketTick): SignalOutput {
     const totalVol = safeNum(tick.trades.buy_volume + tick.trades.sell_volume, 0);
-    if (totalVol === 0) return this.defaultSignal(SignalType.FLOW, tick.processing_timestamp);
-    
+
+    if (totalVol === 0) {
+      // Hold last known value — never flicker to "Insufficient data" after first trade
+      const prev = this.previousFlowValue;
+      return {
+        name: SignalType.FLOW,
+        value: Math.round(prev),
+        severity: this.getSeverity(prev),
+        triggered: prev > 65,
+        raw_metrics: { 'Sell %': '50.0%', 'Imbalance': '1.00' },
+        explanation: prev > 65 ? 'Aggressive market selling detected.' : 'Transaction flow is balanced.',
+        confidence: this.determineConfidence(prev > 0 ? 1 : 0, 2.0, 0.5),
+        timestamp: tick.processing_timestamp,
+      };
+    }
+
     const sellRatio = safeNum(tick.trades.sell_volume / totalVol, 0.5);
     const risk = safeNum(Math.max(0, (sellRatio - 0.5) * 200), 0);
+    this.previousFlowValue = risk;
 
     const confidence = this.determineConfidence(totalVol, 2.0, 0.5);
 
