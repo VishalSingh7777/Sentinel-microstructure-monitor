@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { 
-  NormalizedMarketTick, SignalOutput, StressScore, CausalSequence, 
+import {
+  NormalizedMarketTick, SignalOutput, StressScore, CausalSequence,
   TimelineDataPoint, SignalType, StressLevel, ConfidenceLevel, CriticalEvent,
   DecisionTrace
 } from './types';
@@ -52,32 +52,49 @@ class ErrorBoundary extends React.Component<
 }
 // ────────────────────────────────────────────────────────────────────────────
 
+// ── Playback speed config ────────────────────────────────────────────────────
+// Each historical candle = 1 minute of real COVID crash data.
+// 1×  = 1 candle/sec  — slow, every signal change is visible
+// 50× = 50 candles/sec — fast overview
+// 100×= 100 candles/sec — maximum speed
+const SPEEDS = [1, 50, 100] as const;
+type PlaybackSpeed = typeof SPEEDS[number];
+
+function getPlaybackParams(speed: PlaybackSpeed): { intervalMs: number; stepsPerTick: number } {
+  switch (speed) {
+    case 1:   return { intervalMs: 1000, stepsPerTick: 1  }; // 1 candle / sec
+    case 50:  return { intervalMs: 40,   stepsPerTick: 2  }; // 50 candles / sec
+    case 100: return { intervalMs: 50,   stepsPerTick: 5  }; // 100 candles / sec
+  }
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const App: React.FC = () => {
-  const [mode, setMode] = useState<'LIVE' | 'HISTORICAL'>('LIVE');
-  const [lastTick, setLastTick] = useState<NormalizedMarketTick | null>(null);
-  const [signals, setSignals] = useState<Record<string, SignalOutput> | null>(null);
-  const [stress, setStress] = useState<StressScore | null>(null);
-  const [causal, setCausal] = useState<CausalSequence | null>(null);
-  const [trace, setTrace] = useState<DecisionTrace | null>(null);
-  const [criticalLog, setCriticalLog] = useState<CriticalEvent[]>([]);
-  const [timelineData, setTimelineData] = useState<TimelineDataPoint[]>([]);
+  const [mode, setMode]                     = useState<'LIVE' | 'HISTORICAL'>('LIVE');
+  const [lastTick, setLastTick]             = useState<NormalizedMarketTick | null>(null);
+  const [signals, setSignals]               = useState<Record<string, SignalOutput> | null>(null);
+  const [stress, setStress]                 = useState<StressScore | null>(null);
+  const [causal, setCausal]                 = useState<CausalSequence | null>(null);
+  const [trace, setTrace]                   = useState<DecisionTrace | null>(null);
+  const [criticalLog, setCriticalLog]       = useState<CriticalEvent[]>([]);
+  const [timelineData, setTimelineData]     = useState<TimelineDataPoint[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<'CONNECTED' | 'DISCONNECTED' | 'HISTORICAL'>('DISCONNECTED');
   const [historicalPoints, setHistoricalPoints] = useState<HistoricalDataPoint[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
-  const [simStep, setSimStep] = useState(0);
-  const [isPaused, setIsPaused] = useState(false);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [simStep, setSimStep]               = useState(0);
+  const [isPaused, setIsPaused]             = useState(false);
+  const [playbackSpeed, setPlaybackSpeed]   = useState<PlaybackSpeed>(1);
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
-  const [isAppReady, setIsAppReady] = useState(false);
+  const [isAppReady, setIsAppReady]         = useState(false);
 
-  const analyticsRef = useRef<AnalyticsEngine>(new AnalyticsEngine());
-  const audioRef = useRef<AudioEngine>(new AudioEngine());
-  const binanceRef = useRef<BinanceService | null>(null);
-  const simTimerRef = useRef<any>(null);
-  const simStepRef = useRef<number>(0);
-  const historicalPointsRef = useRef<HistoricalDataPoint[]>([]);
-  const isPausedRef = useRef<boolean>(false);
-  const historyLoader = useMemo(() => new HistoricalDataLoader(), []);
+  const analyticsRef         = useRef<AnalyticsEngine>(new AnalyticsEngine());
+  const audioRef             = useRef<AudioEngine>(new AudioEngine());
+  const binanceRef           = useRef<BinanceService | null>(null);
+  const simTimerRef          = useRef<any>(null);
+  const simStepRef           = useRef<number>(0);
+  const historicalPointsRef  = useRef<HistoricalDataPoint[]>([]);
+  const isPausedRef          = useRef<boolean>(false);
+  const historyLoader        = useMemo(() => new HistoricalDataLoader(), []);
 
   useEffect(() => { historicalPointsRef.current = historicalPoints; }, [historicalPoints]);
   useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
@@ -113,8 +130,8 @@ const App: React.FC = () => {
       if (result.criticalEvent) logCriticalEvent(result.criticalEvent);
       setTimelineData(prev => [...prev, {
         timestamp: tick.exchange_timestamp,
-        price: tick.price,
-        stress: result.stress.score
+        price:     tick.price,
+        stress:    result.stress.score,
       }].slice(-100));
     } catch (err) {
       console.error('[Sentinel] handleLiveTick error:', err);
@@ -132,55 +149,68 @@ const App: React.FC = () => {
       setIsPaused(false);
       isPausedRef.current = false;
     } catch (e) {
-      alert("Failed to load historical data. Reverting to Live mode.");
+      alert('Failed to load historical data. Reverting to Live mode.');
       setMode('LIVE');
     } finally {
       setIsLoadingHistory(false);
     }
   }, [historyLoader]);
 
-  const runHistoryStep = useCallback((stepIndex: number, isSeeking = false) => {
-    try {
-      const point = historicalPointsRef.current[stepIndex];
-      if (!point) return;
-      const tick = historyLoader.convertToTick(point);
+  // ── Seek handler ─────────────────────────────────────────────────────────
+  // FIX: Old code built the timeline using a tempAnalytics instance but then
+  // still called analyticsRef.current.processTick() with stale buffer state
+  // left over from wherever playback was before the seek. This produced garbage
+  // signals for ~300 ticks after every seek.
+  //
+  // Fix: reset the main engine, warm it up from (seekIndex-300) to seekIndex,
+  // build the timeline from that same warm-up run, then set all UI state from
+  // the final warmed result. One pass, one engine, no stale state.
+  const seekToStep = useCallback((stepIndex: number) => {
+    const points = historicalPointsRef.current;
+    if (!points.length) return;
 
-      if (isSeeking) {
-        const seekPoints: TimelineDataPoint[] = [];
-        const startIdx = Math.max(0, stepIndex - 100);
-        const tempAnalytics = new AnalyticsEngine();
-        for (let i = startIdx; i <= stepIndex; i++) {
-          const hPoint = historicalPointsRef.current[i];
-          if (hPoint) {
-            const hTick = historyLoader.convertToTick(hPoint);
-            const res = tempAnalytics.processTick(hTick);
-            seekPoints.push({ timestamp: hTick.exchange_timestamp, price: hTick.price, stress: res.stress.score, label: hPoint.close < hPoint.open * 0.95 ? 'MAJOR DROP' : null });
-          }
+    try {
+      analyticsRef.current.reset();
+
+      const warmupStart  = Math.max(0, stepIndex - 300);
+      const seekPoints: TimelineDataPoint[] = [];
+      let lastResult: ReturnType<AnalyticsEngine['processTick']> | null = null;
+      let lastTick: NormalizedMarketTick | null = null;
+
+      for (let i = warmupStart; i <= stepIndex; i++) {
+        const hPoint = points[i];
+        if (!hPoint) continue;
+        const hTick = historyLoader.convertToTick(hPoint);
+        const res   = analyticsRef.current.processTick(hTick);
+        lastResult  = res;
+        lastTick    = hTick;
+        // Build timeline from last 100 points of the warm-up window
+        if (i >= stepIndex - 100) {
+          seekPoints.push({
+            timestamp: hTick.exchange_timestamp,
+            price:     hTick.price,
+            stress:    res.stress.score,
+            label:     hPoint.close < hPoint.open * 0.95 ? 'MAJOR DROP' : null,
+          });
         }
-        setTimelineData(seekPoints);
       }
 
-      const result = analyticsRef.current.processTick(tick);
-      setLastTick(tick);
-      setSignals(result.signals);
-      setStress(result.stress);
-      setCausal(result.causal);
-      setTrace(result.trace);
-      if (result.stress) audioRef.current.setStress(result.stress.score);
-      if (result.criticalEvent && !isSeeking) logCriticalEvent(result.criticalEvent);
-      if (!isSeeking) {
-        setTimelineData(prev => [...prev, {
-          timestamp: tick.exchange_timestamp,
-          price: tick.price,
-          stress: result.stress.score,
-          label: point.close < point.open * 0.95 ? 'VOLATILITY SPIKE' : null
-        }].slice(-100));
+      setTimelineData(seekPoints);
+
+      if (lastResult && lastTick) {
+        setLastTick(lastTick);
+        setSignals(lastResult.signals);
+        setStress(lastResult.stress);
+        setCausal(lastResult.causal);
+        setTrace(lastResult.trace);
+        if (lastResult.stress) audioRef.current.setStress(lastResult.stress.score);
       }
     } catch (err) {
-      console.error('[Sentinel] runHistoryStep error at index', stepIndex, err);
+      console.error('[Sentinel] seekToStep error at', stepIndex, err);
     }
-  }, [historyLoader, logCriticalEvent]);
+  }, [historyLoader]);
 
+  // ── Mode switch effect ────────────────────────────────────────────────────
   useEffect(() => {
     binanceRef.current?.stop();
     clearInterval(simTimerRef.current);
@@ -197,19 +227,12 @@ const App: React.FC = () => {
     audioRef.current.setStress(0);
 
     if (mode === 'LIVE') {
-      // FIX (Bug 6): start() is async (runs syncClock + opens 3 WebSockets).
-      // Previously we called start() fire-and-forget then immediately set
-      // CONNECTED — the UI showed "STREAMING" while still doing clock sync.
-      // Now: status stays DISCONNECTED until BinanceService actually emits
-      // the first valid tick, confirmed via the onStatusChange callback.
       setConnectionStatus('DISCONNECTED');
       binanceRef.current = new BinanceService(
         handleLiveTick,
         (status) => setConnectionStatus(status)
       );
-      // Fire-and-forget is intentional here — we do NOT await.
-      // Status is updated by the callback above when first tick arrives.
-      binanceRef.current.start().catch((err) => {
+      binanceRef.current.start().catch(err => {
         console.error('[Sentinel] BinanceService.start() failed:', err);
         setConnectionStatus('DISCONNECTED');
       });
@@ -224,21 +247,27 @@ const App: React.FC = () => {
     };
   }, [mode, handleLiveTick, loadCovidData]);
 
-  // Batched playback — max 20 UI renders/sec regardless of speed
+  // ── Playback loop ─────────────────────────────────────────────────────────
+  // FIX: `historicalPoints` state was in the dependency array. Every time
+  // loadCovidData called setHistoricalPoints(), this effect fired — tearing
+  // down and rebuilding the interval mid-playback. Crash bug.
+  //
+  // Fix: read ONLY from historicalPointsRef (always current, never triggers
+  // re-render). Remove historicalPoints from deps entirely. The effect now
+  // only restarts when mode, isPaused, or playbackSpeed genuinely changes.
   useEffect(() => {
     clearInterval(simTimerRef.current);
-    if (mode !== 'HISTORICAL' || isPaused || historicalPoints.length === 0) return;
+    if (mode !== 'HISTORICAL' || isPaused) return;
 
-    const RENDER_CAP_MS = 50;
-    const stepsPerTick = Math.max(1, Math.round(playbackSpeed * RENDER_CAP_MS / 1000));
+    const { intervalMs, stepsPerTick } = getPlaybackParams(playbackSpeed);
 
     simTimerRef.current = setInterval(() => {
       if (isPausedRef.current) return;
       const points = historicalPointsRef.current;
       if (!points.length) return;
 
-      let lastResult: any = null;
-      let lastTick: NormalizedMarketTick | null = null;
+      let lastResult: ReturnType<AnalyticsEngine['processTick']> | null = null;
+      let batchLastTick: NormalizedMarketTick | null = null;
       let lastPoint: HistoricalDataPoint | null = null;
       let finalStep = simStepRef.current;
       let reachedEnd = false;
@@ -249,14 +278,14 @@ const App: React.FC = () => {
         simStepRef.current = nextStep;
         finalStep = nextStep;
         try {
-          const point = points[nextStep];
-          const tick = historyLoader.convertToTick(point);
+          const point  = points[nextStep];
+          const tick   = historyLoader.convertToTick(point);
           const result = analyticsRef.current.processTick(tick);
-          lastResult = result;
-          lastTick = tick;
-          lastPoint = point;
+          lastResult   = result;
+          batchLastTick = tick;
+          lastPoint    = point;
           if (result.criticalEvent) logCriticalEvent(result.criticalEvent);
-        } catch(e) {
+        } catch (e) {
           console.error('[Sentinel] batch step error at', finalStep, e);
         }
       }
@@ -267,25 +296,26 @@ const App: React.FC = () => {
         return;
       }
 
-      if (lastResult && lastTick && lastPoint) {
+      if (lastResult && batchLastTick && lastPoint) {
         setSimStep(finalStep);
-        setLastTick(lastTick);
+        setLastTick(batchLastTick);
         setSignals(lastResult.signals);
         setStress(lastResult.stress);
         setCausal(lastResult.causal);
         setTrace(lastResult.trace);
         if (lastResult.stress) audioRef.current.setStress(lastResult.stress.score);
         setTimelineData(prev => [...prev, {
-          timestamp: lastTick!.exchange_timestamp,
-          price: lastTick!.price,
-          stress: lastResult.stress.score,
-          label: lastPoint!.close < lastPoint!.open * 0.95 ? 'VOLATILITY SPIKE' : null
+          timestamp: batchLastTick!.exchange_timestamp,
+          price:     batchLastTick!.price,
+          stress:    lastResult!.stress.score,
+          label:     lastPoint!.close < lastPoint!.open * 0.95 ? 'VOLATILITY SPIKE' : null,
         }].slice(-100));
       }
-    }, RENDER_CAP_MS);
+    }, intervalMs);
 
     return () => clearInterval(simTimerRef.current);
-  }, [mode, isPaused, playbackSpeed, historicalPoints, historyLoader, logCriticalEvent]);
+    // NOTE: historicalPoints intentionally NOT in deps — read via ref only
+  }, [mode, isPaused, playbackSpeed, historyLoader, logCriticalEvent]);
 
   useEffect(() => {
     return () => { audioRef.current.disable(); };
@@ -318,7 +348,7 @@ const App: React.FC = () => {
             <button onClick={() => setMode('LIVE')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 ${mode === 'LIVE' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30 ring-1 ring-emerald-500/50' : 'bg-gray-800 text-gray-500 hover:text-gray-300'}`}>LIVE FEED</button>
             <button onClick={() => setMode('HISTORICAL')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 ${mode === 'HISTORICAL' ? 'bg-amber-600 text-white shadow-lg shadow-amber-900/30 ring-1 ring-amber-500/50' : 'bg-gray-800 text-gray-500 hover:text-gray-300'}`}>COVID CRASH REPLAY</button>
           </div>
-          <button onClick={toggleAudio} className={`w-9 h-9 flex items-center justify-center rounded-lg border transition-all duration-300 ${isAudioEnabled ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-gray-800 border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-500'}`} title={isAudioEnabled ? "Mute Sonification" : "Enable Sonification"}>
+          <button onClick={toggleAudio} className={`w-9 h-9 flex items-center justify-center rounded-lg border transition-all duration-300 ${isAudioEnabled ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-gray-800 border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-500'}`} title={isAudioEnabled ? 'Mute Sonification' : 'Enable Sonification'}>
             {isAudioEnabled ? (
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
             ) : (
@@ -351,29 +381,48 @@ const App: React.FC = () => {
             </div>
           ) : (
             <>
-              <button onClick={() => { const next = !isPaused; setIsPaused(next); isPausedRef.current = next; }} className="w-10 h-10 flex items-center justify-center rounded-full bg-gray-800 hover:bg-amber-600 text-white transition-all shadow-inner">
-                {isPaused ? <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M4.5 2.691l11 6.309-11 6.309V2.691z" /></svg> : <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M5 4h3v12H5V4zm7 0h3v12h-3V4z" /></svg>}
+              <button
+                onClick={() => { const next = !isPaused; setIsPaused(next); isPausedRef.current = next; }}
+                className="w-10 h-10 flex items-center justify-center rounded-full bg-gray-800 hover:bg-amber-600 text-white transition-all shadow-inner"
+              >
+                {isPaused
+                  ? <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M4.5 2.691l11 6.309-11 6.309V2.691z" /></svg>
+                  : <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M5 4h3v12H5V4zm7 0h3v12h-3V4z" /></svg>
+                }
               </button>
+
               <div className="flex-1 flex flex-col gap-1">
                 <div className="flex justify-between text-[10px] font-mono text-gray-500 uppercase tracking-widest">
                   <span>Temporal Replay ({new Date(historicalPoints[simStep]?.timestamp || 0).toLocaleDateString()})</span>
-                  <span className="text-amber-500 font-bold">{Math.round((simStep / (historicalPoints.length-1 || 1)) * 100)}% Complete</span>
+                  <span className="text-amber-500 font-bold">{Math.round((simStep / (historicalPoints.length - 1 || 1)) * 100)}% Complete</span>
                 </div>
-                <input type="range" min="0" max={historicalPoints.length - 1} value={simStep}
+                <input
+                  type="range"
+                  min="0"
+                  max={historicalPoints.length - 1}
+                  value={simStep}
                   onChange={(e) => {
                     const val = parseInt(e.target.value);
                     simStepRef.current = val;
                     setSimStep(val);
                     setIsPaused(true);
                     isPausedRef.current = true;
-                    runHistoryStep(val, true);
+                    seekToStep(val);
                   }}
                   className="w-full h-1.5 bg-gray-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
                 />
               </div>
+
+              {/* Speed buttons — only 1×, 50×, 100× */}
               <div className="flex items-center gap-2 bg-[#0a0e14] rounded-lg p-1 border border-gray-800">
-                {[1, 5, 20, 50, 100].map(s => (
-                  <button key={s} onClick={() => setPlaybackSpeed(s)} className={`px-2 py-1 text-[10px] font-bold rounded transition-colors ${playbackSpeed === s ? 'bg-amber-600 text-white shadow-lg shadow-amber-900/20' : 'text-gray-500 hover:text-gray-300'}`}>{s}x</button>
+                {SPEEDS.map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setPlaybackSpeed(s)}
+                    className={`px-2 py-1 text-[10px] font-bold rounded transition-colors ${playbackSpeed === s ? 'bg-amber-600 text-white shadow-lg shadow-amber-900/20' : 'text-gray-500 hover:text-gray-300'}`}
+                  >
+                    {s}x
+                  </button>
                 ))}
               </div>
             </>
@@ -421,7 +470,7 @@ const App: React.FC = () => {
                     { id: 'L', type: SignalType.LIQUIDITY },
                     { id: 'F', type: SignalType.FLOW },
                     { id: 'V', type: SignalType.VOLATILITY },
-                    { id: 'S', type: SignalType.FORCED_SELLING }
+                    { id: 'S', type: SignalType.FORCED_SELLING },
                   ].map(v => {
                     const active = signals[v.type]?.triggered;
                     return (
@@ -463,7 +512,7 @@ const App: React.FC = () => {
                           <span className={`text-[8px] font-mono px-2 py-0.5 rounded uppercase tracking-tighter ${step.type === 'CATALYST' ? 'bg-amber-500 text-black font-black shadow-[0_0_10px_rgba(245,158,11,0.4)]' : step.type === 'SYSTEMIC' ? 'bg-red-500 text-white font-black' : 'bg-gray-800 text-gray-500 font-bold'}`}>{step.type}</span>
                           <div className="text-xs font-black text-white uppercase tracking-tight font-mono">{step.signal}</div>
                         </div>
-                        <span className="text-[9px] text-gray-700 font-mono italic">T+{Math.round((Date.now() - step.timestamp)/1000)}s</span>
+                        <span className="text-[9px] text-gray-700 font-mono italic">T+{Math.round((Date.now() - step.timestamp) / 1000)}s</span>
                       </div>
                       <p className="text-[11px] text-gray-400 leading-snug font-sans bg-gray-900/50 p-3 rounded-lg border border-gray-800/80 hover:border-gray-700 transition-colors shadow-inner">{step.description}</p>
                     </div>
@@ -471,14 +520,14 @@ const App: React.FC = () => {
                 )) : (
                   <div className="h-full flex flex-col items-center justify-center text-gray-700 space-y-5 opacity-20 grayscale">
                     <div className="w-16 h-16 border-2 border-dashed border-gray-800 rounded-full animate-spin duration-[20s]" />
-                    <span className="text-[9px] font-mono italic uppercase tracking-widest text-center leading-loose">Awaiting structural anomalies...<br/>Continuous state monitoring active.</span>
+                    <span className="text-[9px] font-mono italic uppercase tracking-widest text-center leading-loose">Awaiting structural anomalies...<br />Continuous state monitoring active.</span>
                   </div>
                 )}
               </div>
               {causal?.active && (
                 <div className="mt-4 pt-4 border-t border-gray-800 bg-[#151a23]/80 backdrop-blur-sm">
                   <p className="text-[10px] text-emerald-400 font-black font-mono uppercase tracking-tighter animate-pulse flex items-center gap-2">
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/></svg>
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" /></svg>
                     {causal.risk_assessment}
                   </p>
                 </div>
