@@ -17,13 +17,18 @@ export class BinanceService {
   private clockOffset = 0; // Difference between Binance server time and local time
   
   private onTickCallback: (tick: NormalizedMarketTick) => void;
+  private onStatusChange?: (status: 'CONNECTED' | 'DISCONNECTED') => void;
   private intervalId: any = null;
 
   // Use the recommended port 9443 for better stability
   private readonly WS_BASE_URL = 'wss://stream.binance.com:9443/ws';
 
-  constructor(onTick: (tick: NormalizedMarketTick) => void) {
+  constructor(
+    onTick: (tick: NormalizedMarketTick) => void,
+    onStatusChange?: (status: 'CONNECTED' | 'DISCONNECTED') => void
+  ) {
     this.onTickCallback = onTick;
+    this.onStatusChange = onStatusChange;
   }
 
   /**
@@ -66,6 +71,8 @@ export class BinanceService {
     this.intervalId = setInterval(() => {
       this.emitTick();
     }, 100);
+
+    this.onStatusChange?.('CONNECTED');
   }
 
   stop(): void {
@@ -75,6 +82,7 @@ export class BinanceService {
       this.intervalId = null;
     }
     this.closeSockets();
+    this.onStatusChange?.('DISCONNECTED');
   }
 
   private closeSockets(): void {
