@@ -344,11 +344,16 @@ export class AnalyticsEngine {
   }
 
   private detectCriticalEvent(tick: NormalizedMarketTick, stress: StressScore, causal: CausalSequence): CriticalEvent | null {
-    // Both conditions now require score > 60 so alerts only log above that threshold.
-    // Previously levelUpgrade used rank >= 2 (STRESSED) which fired from score 50 upward.
+    // Use pre_smooth_score (raw × shock, before EMA) for the threshold check.
+    // The final score is EMA-smoothed so it lags behind reality — if stress spikes
+    // from 40 to 80 in one tick, smoothed score only reaches ~54 (0.35×80 + 0.65×40).
+    // Checking the smoothed score means alerts fire several ticks late.
+    // pre_smooth_score is the true current intensity — use that to fire immediately.
+    const rawCurrent = stress.raw_score * (1 + stress.signals_aligned * 0.08);
+    const immediateScore = Math.min(100, rawCurrent);
     const levelUpgrade = this.getStressRank(stress.level) > this.getStressRank(this.previousLevel) &&
-                         stress.score > 60;
-    const alignmentIncrease = stress.signals_aligned > this.previousSignalsAligned && stress.score > 60;
+                         immediateScore > 60;
+    const alignmentIncrease = stress.signals_aligned > this.previousSignalsAligned && immediateScore > 60;
 
     if (levelUpgrade || alignmentIncrease) {
       const event: CriticalEvent = {
