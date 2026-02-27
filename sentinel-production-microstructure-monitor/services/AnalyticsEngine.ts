@@ -61,7 +61,10 @@ export class AnalyticsEngine {
 
     const { stress, trace } = this.calculateStressWithTrace(signals, tick);
     const causal = this.buildCausalSequence(stress, signals);
-    const criticalEvent = this.detectCriticalEvent(tick, stress, causal);
+    // NOTE: calculateStressWithTrace updates this.previousStress at the end.
+    // We need the value from BEFORE this tick to detect threshold crossing.
+    // trace.previous_score holds exactly that — the smoothed score from last tick.
+    const criticalEvent = this.detectCriticalEvent(tick, stress, causal, trace.previous_score);
 
     return { signals, stress, causal, criticalEvent, trace };
   }
@@ -343,19 +346,15 @@ export class AnalyticsEngine {
     return `Tension detected in ${catalyst}, causing feedback in ${steps[steps.length - 1].signal}.`;
   }
 
-  private detectCriticalEvent(tick: NormalizedMarketTick, stress: StressScore, causal: CausalSequence): CriticalEvent | null {
-    // Use pre_smooth_score (raw × shock, before EMA) for the threshold check.
-    // The final score is EMA-smoothed so it lags behind reality — if stress spikes
-    // from 40 to 80 in one tick, smoothed score only reaches ~54 (0.35×80 + 0.65×40).
-    // Checking the smoothed score means alerts fire several ticks late.
-    // pre_smooth_score is the true current intensity — use that to fire immediately.
-    const rawCurrent = stress.raw_score * (1 + stress.signals_aligned * 0.08);
-    const immediateScore = Math.min(100, rawCurrent);
-    const levelUpgrade = this.getStressRank(stress.level) > this.getStressRank(this.previousLevel) &&
-                         immediateScore > 60;
-    const alignmentIncrease = stress.signals_aligned > this.previousSignalsAligned && immediateScore > 60;
+  private detectCriticalEvent(tick: NormalizedMarketTick, stress: StressScore, causal: CausalSequence, lastScore: number): CriticalEvent | null {
+    // Fire when stress.score crosses above 60 — same value the gauge displays.
+    // lastScore = smoothed score from the previous tick (before this tick's EMA ran).
+    // crossedThreshold: this tick just went from ≤60 to >60 — fire immediately.
+    // escalation: already above 60 and a new signal just joined.
+    const crossedThreshold = stress.score > 60 && lastScore <= 60;
+    const escalation = stress.score > 60 && stress.signals_aligned > this.previousSignalsAligned;
 
-    if (levelUpgrade || alignmentIncrease) {
+    if (crossedThreshold || escalation) {
       const event: CriticalEvent = {
         id: `forensic_${tick.exchange_timestamp}_${Math.floor(Math.random() * 999)}`,
         timestamp: tick.exchange_timestamp,
