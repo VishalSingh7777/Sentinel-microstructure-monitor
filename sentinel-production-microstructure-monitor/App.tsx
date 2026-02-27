@@ -487,8 +487,8 @@ const App: React.FC = () => {
               <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 blur-[80px] rounded-full pointer-events-none z-0" />
               <div className="flex justify-between items-center mb-5 relative z-10">
                 <div className="flex flex-col">
-                  <h2 className="text-[11px] font-black text-blue-400 uppercase tracking-[0.3em]">Forensic Review</h2>
-                  <span className="text-[8px] text-gray-600 font-mono uppercase tracking-widest">Physical Breach Log</span>
+                  <h2 className="text-[11px] font-black text-blue-400 uppercase tracking-[0.3em]">Breach Log</h2>
+                  <span className="text-[8px] text-gray-600 font-mono uppercase tracking-widest">Stress Event Log</span>
                 </div>
                 <div className="flex gap-2">
                   <span className="text-[9px] text-gray-600 font-mono px-3 py-1 bg-[#0a0e14] border border-gray-800 rounded-full flex items-center gap-2 shadow-inner">
@@ -498,13 +498,24 @@ const App: React.FC = () => {
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar relative z-10">
-                {criticalLog.length > 0 ? criticalLog.map((event) => (
+                {criticalLog.length > 0 ? criticalLog.map((event, eventIdx) => {
+                  // Map full signal names to short abbreviations for the Vectors row
+                  const getVectorTag = (sig: string) => {
+                    if (sig.includes('Liquidity')) return 'LIQ';
+                    if (sig.includes('Flow'))      return 'FLOW';
+                    if (sig.includes('Volatility'))return 'VOL';
+                    if (sig.includes('Forced'))    return 'SELL';
+                    return sig.split(' ')[0];
+                  };
+                  return (
                   <div key={event.id} className="p-4 bg-[#0a0e14]/40 backdrop-blur-md border border-gray-800/60 rounded-xl hover:border-gray-600 transition-all group relative overflow-hidden shadow-sm">
                     <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${event.stress_score > 80 ? 'bg-red-500 shadow-[0_0_15px_rgba(239,68,68,0.6)]' : 'bg-amber-500'}`} />
                     <div className="flex justify-between items-start mb-2.5">
                       <div className="flex flex-col">
                         <span className={`text-[10px] font-black font-mono uppercase tracking-tight ${event.stress_score > 80 ? 'text-red-400' : 'text-gray-300'}`}>{event.level} REGIME</span>
-                        <span className="text-[9px] text-gray-600 font-mono">{new Date(event.timestamp).toLocaleTimeString([], { hour12: false, minute: '2-digit', second: '2-digit' })} • REF_{event.id.split('_').pop()?.toUpperCase()}</span>
+                        <span className="text-[9px] text-gray-600 font-mono">
+                          {new Date(event.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })} • #{criticalLog.length - eventIdx}
+                        </span>
                       </div>
                       <div className="flex items-center gap-3">
                         <div className="text-right">
@@ -518,22 +529,22 @@ const App: React.FC = () => {
                     </div>
                     <div className="text-[11px] text-gray-400 leading-snug mb-3 font-sans opacity-90 group-hover:opacity-100 border-l border-gray-800/80 pl-4 py-1 italic bg-gray-900/20 rounded-r">{event.narrative}</div>
                     <div className="flex gap-2 flex-wrap items-center">
-                      <span className="text-[8px] text-gray-700 uppercase font-mono font-bold tracking-widest">Vectors:</span>
+                      <span className="text-[8px] text-gray-700 uppercase font-mono font-bold tracking-widest">Signals:</span>
                       {event.signals.map((sig, idx) => (
-                        <span key={idx} className="text-[8px] bg-[#0a0e14] text-blue-400 px-2 py-0.5 rounded-sm border border-blue-500/10 font-mono font-black hover:border-blue-400/50 transition-colors shadow-inner">{sig.split(' ')[0]}</span>
+                        <span key={idx} className="text-[8px] bg-[#0a0e14] text-blue-400 px-2 py-0.5 rounded-sm border border-blue-500/10 font-mono font-black hover:border-blue-400/50 transition-colors shadow-inner">{getVectorTag(sig)}</span>
                       ))}
                     </div>
                   </div>
-                )) : (
+                )}) : (
                   <div className="h-full flex flex-col items-center justify-center text-gray-800 space-y-3 opacity-30">
                     <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={0.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                    <span className="text-[9px] font-mono italic uppercase tracking-[0.4em] text-center">Forensic database empty</span>
+                    <span className="text-[9px] font-mono italic uppercase tracking-[0.4em] text-center">No breach events logged</span>
                   </div>
                 )}
               </div>
               <div className="mt-4 pt-4 border-t border-gray-800/40 flex justify-between items-center bg-[#151a23]/60 relative z-10">
-                <p className="text-[8px] text-gray-600 leading-tight max-w-[75%] font-mono uppercase tracking-widest opacity-80">STATE CAPTURE: ADAPTIVE NEURAL SAMPLING AT S-RANK UPGRADE.</p>
-                <span className="text-[9px] text-gray-700 font-mono font-bold">NODE.SNT.P</span>
+                <p className="text-[8px] text-gray-600 leading-tight max-w-[75%] font-mono uppercase tracking-widest opacity-80">Logs every stress event above threshold 60. Most recent first.</p>
+                <span className="text-[9px] text-gray-700 font-mono font-bold">SENTINEL</span>
               </div>
             </div>
           </div>
