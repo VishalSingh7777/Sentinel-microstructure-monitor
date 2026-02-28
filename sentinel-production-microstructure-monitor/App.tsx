@@ -568,7 +568,7 @@ const App: React.FC = () => {
           <TimelineChart data={activeTimeline} />
 
           {/* Bottom panels — fixed height, no stretching */}
-          <div className="grid grid-cols-12 gap-4 h-[960px] overflow-hidden">
+          <div className="grid grid-cols-12 gap-4 h-[320px] overflow-hidden">
 
             {/* ── Causality Engine ── */}
             <div className="col-span-12 lg:col-span-5 bg-[#151a23] border border-gray-800 rounded-xl p-5 flex flex-col overflow-hidden relative shadow-lg">
@@ -675,7 +675,7 @@ const App: React.FC = () => {
               </div>
 
               {/* Scrollable log — never stretches the panel */}
-              <div className="grid grid-cols-12 gap-4 h-[900px] overflow-hidden">
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar relative z-10 min-h-0">
                 {criticalLog.length > 0 ? criticalLog.map((event, eventIdx) => {
                   const isActive = snapshotEvent?.id === event.id;
                   return (
