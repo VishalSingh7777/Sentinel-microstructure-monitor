@@ -6,26 +6,46 @@ import {
 import { THEME } from '../constants';
 import { CircularBuffer } from './CircularBuffer';
 
-// Guards any number against NaN/Infinity — if corrupted, returns fallback
 const safeNum = (val: number, fallback = 0): number =>
   isFinite(val) && !isNaN(val) ? val : fallback;
 
+// ─── Named structural failure patterns ────────────────────────────────────────
+// Each pattern is named by the specific combination of active signals.
+// Ordering: LIQUIDITY, FLOW, VOLATILITY, FORCED_SELLING → bitmask L|F|V|S
+const PATTERN_LABELS: Record<string, string> = {
+  '1000': 'LIQUIDITY DRAIN',
+  '0100': 'SELL PRESSURE',
+  '0010': 'PRICE INSTABILITY',
+  '0001': 'INSTITUTIONAL EXIT',
+  '1100': 'LIQUIDITY VACUUM SELLOFF',
+  '1010': 'DEPTH COLLAPSE + VOLATILITY',
+  '1001': 'WHALE EXECUTION INTO THIN BOOK',
+  '0110': 'PANIC SELLING CASCADE',
+  '0101': 'COORDINATED INSTITUTIONAL EXIT',
+  '0011': 'FORCED LIQUIDATION SPIRAL',
+  '1110': 'MULTI-VECTOR BREAKDOWN',
+  '1101': 'STRUCTURAL MARKET FAILURE',
+  '1011': 'LIQUIDITY CRISIS',
+  '0111': 'CAPITULATION EVENT',
+  '1111': 'FULL MARKET BREAKDOWN — BLACK SWAN',
+};
+
 export class AnalyticsEngine {
   private liquidityBuffer = new CircularBuffer<number>(300);
-  private priceBuffer    = new CircularBuffer<number>(300);
-  // NOTE: volBuffer removed — was declared but never read or written during
-  // signal processing. Only wasted memory and confused readers.
-  private previousStress = 0;
+  private priceBuffer     = new CircularBuffer<number>(300);
+  // NOTE: volBuffer removed — dead code (never pushed to or read from).
+  private previousStress          = 0;
   private previousLevel: StressLevel = StressLevel.STABLE;
-  private previousSignalsAligned = 0;
+  private previousSignalsAligned  = 0;
   private lastTrace: DecisionTrace | null = null;
-  private previousFlowValue = 0;
-  // Escalation cooldown: track last event timestamp (exchange time) so the
-  // breach log doesn't get flooded with rapid-fire escalation entries while
-  // stress is elevated. Require ≥60 s gap between escalation events.
-  private lastEventExchangeTs = 0;
-
+  private previousFlowValue       = 0;
+  // Escalation cooldown — 60 s of exchange time between breach log entries
+  private lastEventExchangeTs     = 0;
+  // Causality tracking
   private triggerOrder: { signal: SignalType, timestamp: number, initialValue: number }[] = [];
+  private catalystTimestamp       = 0;    // exchange_timestamp when first signal fired
+  // Stress velocity — last 5 smoothed scores for rate-of-change calculation
+  private stressHistory: number[] = [];
 
   private readonly weights = {
     [SignalType.LIQUIDITY]:      0.35,
@@ -37,25 +57,25 @@ export class AnalyticsEngine {
   reset(): void {
     this.liquidityBuffer.clear();
     this.priceBuffer.clear();
-    this.previousStress = 0;
-    this.previousLevel = StressLevel.STABLE;
+    this.previousStress         = 0;
+    this.previousLevel          = StressLevel.STABLE;
     this.previousSignalsAligned = 0;
-    this.triggerOrder = [];
-    this.lastTrace = null;
-    this.previousFlowValue = 0;
-    this.lastEventExchangeTs = 0;
+    this.triggerOrder           = [];
+    this.lastTrace              = null;
+    this.previousFlowValue      = 0;
+    this.lastEventExchangeTs    = 0;
+    this.catalystTimestamp      = 0;
+    this.stressHistory          = [];
   }
 
-  getLastTrace(): DecisionTrace | null {
-    return this.lastTrace;
-  }
+  getLastTrace(): DecisionTrace | null { return this.lastTrace; }
 
   processTick(tick: NormalizedMarketTick): {
-    signals: Record<SignalType, SignalOutput>,
-    stress: StressScore,
-    causal: CausalSequence,
+    signals:       Record<SignalType, SignalOutput>,
+    stress:        StressScore,
+    causal:        CausalSequence,
     criticalEvent: CriticalEvent | null,
-    trace: DecisionTrace
+    trace:         DecisionTrace
   } {
     const signals = {
       [SignalType.LIQUIDITY]:      this.processLiquidity(tick),
@@ -65,15 +85,17 @@ export class AnalyticsEngine {
     };
 
     const { stress, trace } = this.calculateStressWithTrace(signals, tick);
-    // Pass tick so buildCausalSequence stores exchange_timestamp not Date.now()
-    const causal = this.buildCausalSequence(stress, signals, tick);
-    // trace.previous_score = smoothed score BEFORE this tick's EMA ran.
-    // Use it for threshold-crossing detection — not this.previousStress which
-    // is already overwritten by calculateStressWithTrace.
+    // Update velocity history AFTER computing stress so this tick is included
+    this.stressHistory.push(stress.score);
+    if (this.stressHistory.length > 5) this.stressHistory.shift();
+
+    const causal       = this.buildCausalSequence(stress, signals, tick);
     const criticalEvent = this.detectCriticalEvent(tick, stress, causal, trace.previous_score);
 
     return { signals, stress, causal, criticalEvent, trace };
   }
+
+  // ── Signal processors ──────────────────────────────────────────────────────
 
   private determineConfidence(value: number, highThreshold: number, medThreshold: number): ConfidenceLevel {
     if (value >= highThreshold) return ConfidenceLevel.HIGH;
@@ -83,15 +105,13 @@ export class AnalyticsEngine {
 
   private processLiquidity(tick: NormalizedMarketTick): SignalOutput {
     this.liquidityBuffer.push(safeNum(tick.total_depth, 0.1));
-    const baseline   = safeNum(this.liquidityBuffer.mean(), 0.1);
+    const baseline    = safeNum(this.liquidityBuffer.mean(), 0.1);
     const depthChange = baseline === 0
       ? 0
       : safeNum(((tick.total_depth - baseline) / baseline) * 100, 0);
     let risk = depthChange >= 0 ? 0 : Math.min(100, (-depthChange / 40) * 100);
-    risk = safeNum(risk, 0);
-
+    risk     = safeNum(risk, 0);
     const confidence = this.determineConfidence(this.liquidityBuffer.size(), 60, 20);
-
     return {
       name: SignalType.LIQUIDITY,
       value: Math.round(risk),
@@ -108,7 +128,6 @@ export class AnalyticsEngine {
 
   private processFlow(tick: NormalizedMarketTick): SignalOutput {
     const totalVol = safeNum(tick.trades.buy_volume + tick.trades.sell_volume, 0);
-
     if (totalVol === 0) {
       const prev = this.previousFlowValue;
       return {
@@ -122,13 +141,10 @@ export class AnalyticsEngine {
         timestamp: tick.processing_timestamp,
       };
     }
-
     const sellRatio = safeNum(tick.trades.sell_volume / totalVol, 0.5);
     const risk      = safeNum(Math.max(0, (sellRatio - 0.5) * 200), 0);
     this.previousFlowValue = risk;
-
     const confidence = this.determineConfidence(totalVol, 2.0, 0.5);
-
     return {
       name: SignalType.FLOW,
       value: Math.round(risk),
@@ -144,6 +160,12 @@ export class AnalyticsEngine {
     };
   }
 
+  // ── VOLATILITY REGIME SHIFT — DO NOT MODIFY ────────────────────────────────
+  // Logic: stdShort (last 10 prices) / stdLong (up to 300 prices).
+  // Ratio approach is scale-invariant — BTC at any price level cancels perfectly.
+  // ratio=1 → risk=0, ratio≥3 → risk=100. Trigger at risk>55 (ratio>2.1) is
+  // deliberately conservative — detects genuine regime shifts, not noise.
+  // Verified correct 2025-02-28. Do not change.
   private processVolatility(tick: NormalizedMarketTick): SignalOutput {
     this.priceBuffer.push(safeNum(tick.price, 1));
     const prices = this.priceBuffer.getAll();
@@ -158,9 +180,7 @@ export class AnalyticsEngine {
     const stdLong  = safeNum(getStd(prices), 1) || 1;
     const ratio    = safeNum(stdShort / stdLong, 1);
     const risk     = safeNum(Math.min(100, Math.max(0, (ratio - 1) * 50)), 0);
-
     const confidence = this.determineConfidence(prices.length, 50, 30);
-
     return {
       name: SignalType.VOLATILITY,
       value: Math.round(risk),
@@ -174,24 +194,17 @@ export class AnalyticsEngine {
       timestamp: tick.processing_timestamp
     };
   }
+  // ──────────────────────────────────────────────────────────────────────────
 
   private processForcedSelling(tick: NormalizedMarketTick): SignalOutput {
     const largeSells    = tick.trades.large_trades.filter(t => t.side === 'sell');
     const totalLargeVol = safeNum(largeSells.reduce((s, t) => s + t.quantity, 0), 0);
-
-    // FIX: denominator was 5 BTC → 10 BTC.
-    // With 5 BTC, a single 5 BTC block = 100 risk instantly, saturating the signal.
-    // COVID crash data generates blocks of 13-30 BTC so Forced Selling was
-    // permanently pegged at 100, hiding graduation between mild and severe selling.
-    // 10 BTC denominator gives a meaningful 0-100 range for realistic block sizes.
-    const risk = safeNum(Math.min(100, (totalLargeVol / 10) * 100), 0);
-
-    // FIX: confidence was computed from total trade count against thresholds 50/10.
-    // 500 trades/sec to reach HIGH was unreachable. Forced Selling is a block-trade
-    // signal — confidence should reflect how many large blocks were observed.
+    // Denominator 10 BTC: gives meaningful 0-100 range for real block sizes.
+    // Old denominator was 5 BTC — single 5 BTC block instantly pegged signal at 100.
+    const risk       = safeNum(Math.min(100, (totalLargeVol / 10) * 100), 0);
     const blockCount = largeSells.length;
+    // Confidence based on block count — this is a block-trade signal, not total trade count
     const confidence = this.determineConfidence(blockCount, 3, 1);
-
     return {
       name: SignalType.FORCED_SELLING,
       value: Math.round(risk),
@@ -206,9 +219,11 @@ export class AnalyticsEngine {
     };
   }
 
+  // ── Stress calculation ─────────────────────────────────────────────────────
+
   private calculateStressWithTrace(
     signals: Record<SignalType, SignalOutput>,
-    tick: NormalizedMarketTick
+    tick:    NormalizedMarketTick
   ): { stress: StressScore, trace: DecisionTrace } {
     const sigArray = Object.values(signals);
 
@@ -236,7 +251,7 @@ export class AnalyticsEngine {
     });
     const avgConf = confValues.reduce((a, b) => a + b, 0) / confValues.length;
     let globalConfidence = ConfidenceLevel.LOW;
-    if (avgConf > 2.5) globalConfidence = ConfidenceLevel.HIGH;
+    if (avgConf > 2.5)      globalConfidence = ConfidenceLevel.HIGH;
     else if (avgConf > 1.5) globalConfidence = ConfidenceLevel.MEDIUM;
 
     const weight_contributions: WeightContribution[] = sigArray.map(sig => {
@@ -260,21 +275,19 @@ export class AnalyticsEngine {
 
     const sorted   = [...weight_contributions].sort((a, b) => b.contribution - a.contribution);
     const dominant = sorted[0] ?? { signal: 'UNKNOWN', weight: 0, raw_value: 0, contribution: 0, pct_of_total: 0 };
-
     const shockNote = activeSignals > 0
-      ? `Shock multiplier ${shockMultiplier.toFixed(2)}× applied (${activeSignals} ${activeSignals === 1 ? 'signal' : 'signals'} active), elevating to ${targetStress.toFixed(1)}. `
+      ? `Shock multiplier ${shockMultiplier.toFixed(2)}× (${activeSignals} signals active), elevating to ${targetStress.toFixed(1)}. `
       : '';
     const direction  = targetStress > this.previousStress ? 'rising' : targetStress < this.previousStress ? 'falling' : 'flat';
     const emaFormula = `${alpha} × ${targetStress.toFixed(1)} + ${(1 - alpha).toFixed(2)} × ${this.previousStress.toFixed(1)} = ${smoothedStress.toFixed(1)}`;
-
     const audit_narrative = rawStress > 0
-      ? `Dominant: ${dominant.signal} (${(dominant.weight * 100).toFixed(0)}% weight × ${dominant.raw_value} raw = ${dominant.contribution.toFixed(1)} pts, ${dominant.pct_of_total.toFixed(1)}% of total). Raw weighted score: ${rawStress.toFixed(1)} pts. ${shockNote}Stress ${direction} — alpha ${alpha} (${alpha === 0.35 ? 'fast-attack' : 'slow-decay'}). EMA: ${emaFormula} → rounded to ${finalScore} (${level}). Confidence: ${globalConfidence}.`
+      ? `Dominant: ${dominant.signal} (${(dominant.weight * 100).toFixed(0)}% weight × ${dominant.raw_value} raw = ${dominant.contribution.toFixed(1)} pts, ${dominant.pct_of_total.toFixed(1)}% of total). Raw: ${rawStress.toFixed(1)}. ${shockNote}Stress ${direction} — alpha ${alpha} (${alpha === 0.35 ? 'fast-attack' : 'slow-decay'}). EMA: ${emaFormula} → ${finalScore} (${level}). Confidence: ${globalConfidence}.`
       : `All signals stable. Score: 0. System monitoring.`;
 
     const trace: DecisionTrace = {
       weight_contributions,
-      raw_score:       rawStress,
-      signals_aligned: activeSignals,
+      raw_score:        rawStress,
+      signals_aligned:  activeSignals,
       shock_multiplier: shockMultiplier,
       pre_smooth_score: targetStress,
       smoothing_alpha:  alpha,
@@ -285,18 +298,16 @@ export class AnalyticsEngine {
       timestamp: Date.now()
     };
 
-    // CRITICAL: update previousStress AFTER the trace is built, so trace.previous_score
-    // holds the genuine last-tick value (used by detectCriticalEvent for crossing check).
     this.previousStress = safeNum(smoothedStress, this.previousStress);
     this.lastTrace = trace;
 
     const stress: StressScore = {
-      score:            finalScore,
-      raw_score:        rawStress,
+      score:           finalScore,
+      raw_score:       rawStress,
       level,
-      color:            THEME.stress[level],
-      signals_aligned:  activeSignals,
-      confidence:       globalConfidence,
+      color:           THEME.stress[level],
+      signals_aligned: activeSignals,
+      confidence:      globalConfidence,
       breakdown: {
         liquidity:     safeNum(signals[SignalType.LIQUIDITY].value,      0),
         flow:          safeNum(signals[SignalType.FLOW].value,           0),
@@ -309,93 +320,199 @@ export class AnalyticsEngine {
     return { stress, trace };
   }
 
-  // FIX: accept tick so we can store exchange_timestamp instead of Date.now().
-  // During historical replay Date.now() is the current wall-clock time, making
-  // T+ timestamps meaningless (everything shows T+0s at 100× speed).
+  // ── Causality engine ───────────────────────────────────────────────────────
+
+  private getPatternLabel(signals: Record<SignalType, SignalOutput>): string | null {
+    const L = signals[SignalType.LIQUIDITY].triggered      ? '1' : '0';
+    const F = signals[SignalType.FLOW].triggered           ? '1' : '0';
+    const V = signals[SignalType.VOLATILITY].triggered     ? '1' : '0';
+    const S = signals[SignalType.FORCED_SELLING].triggered ? '1' : '0';
+    const key = L + F + V + S;
+    return PATTERN_LABELS[key] ?? null;
+  }
+
+  private getStressVelocity(): number {
+    if (this.stressHistory.length < 2) return 0;
+    // Average change per tick over the last 5 observations
+    const diffs: number[] = [];
+    for (let i = 1; i < this.stressHistory.length; i++) {
+      diffs.push(this.stressHistory[i] - this.stressHistory[i - 1]);
+    }
+    return safeNum(diffs.reduce((a, b) => a + b, 0) / diffs.length, 0);
+  }
+
   private buildCausalSequence(
-    stress: StressScore,
+    stress:  StressScore,
     signals: Record<SignalType, SignalOutput>,
-    tick: NormalizedMarketTick
+    tick:    NormalizedMarketTick
   ): CausalSequence {
     const activeSignalEntries = Object.values(signals).filter(s => s.triggered);
 
     if (activeSignalEntries.length === 0) {
-      this.triggerOrder = [];
-      return { active: false, steps: [], catalyst_id: null, narrative: '', risk_assessment: '' };
+      this.triggerOrder      = [];
+      this.catalystTimestamp = 0;
+      return {
+        active: false, steps: [], catalyst_id: null,
+        narrative: '', risk_assessment: '',
+        pattern_label: null, stress_velocity: 0
+      };
     }
 
+    // Register newly triggered signals in order — use exchange_timestamp
+    // (not Date.now()) so times are meaningful in historical replay mode.
     activeSignalEntries.forEach(s => {
       if (!this.triggerOrder.find(t => t.signal === s.name)) {
-        // Store exchange_timestamp so T+ is in historical event time, not wall clock
         this.triggerOrder.push({
           signal:       s.name as SignalType,
           timestamp:    tick.exchange_timestamp,
           initialValue: s.value
         });
+        // Record catalyst timestamp when the FIRST signal fires
+        if (this.triggerOrder.length === 1) {
+          this.catalystTimestamp = tick.exchange_timestamp;
+        }
       }
     });
 
+    // Remove signals that are no longer triggered
     this.triggerOrder = this.triggerOrder.filter(t => signals[t.signal].triggered);
+    if (this.triggerOrder.length === 0) this.catalystTimestamp = 0;
+
+    const velocity      = this.getStressVelocity();
+    const patternLabel  = this.getPatternLabel(signals);
+    const rawTotal      = Object.values(signals).reduce(
+      (s, sig) => s + sig.value * this.weights[sig.name], 0
+    );
 
     const steps: CausalStep[] = this.triggerOrder.map((trigger, index) => {
-      const signalData = signals[trigger.signal];
-      const type: 'CATALYST' | 'AMPLIFIER' | 'SYSTEMIC' = index === 0
-        ? 'CATALYST'
-        : stress.score > 70 ? 'SYSTEMIC' : 'AMPLIFIER';
+      const signalData         = signals[trigger.signal];
+      const weight             = this.weights[trigger.signal];
+      const contributionPts    = safeNum(signalData.value * weight, 0);
+      const contributionPct    = rawTotal > 0 ? safeNum((contributionPts / rawTotal) * 100, 0) : 0;
+      const elapsedMs          = tick.exchange_timestamp - (this.catalystTimestamp || tick.exchange_timestamp);
+
+      const type: 'CATALYST' | 'AMPLIFIER' | 'SYSTEMIC' =
+        index === 0 ? 'CATALYST' :
+        stress.score > 70 ? 'SYSTEMIC' : 'AMPLIFIER';
+
+      // Rich description: signal explanation + magnitude contribution
+      const description = `${signalData.explanation} [intensity ${signalData.value}/100 — contributing ${contributionPts.toFixed(1)}pts (${contributionPct.toFixed(0)}% of stress)]`;
+
       return {
-        sequence_id: index + 1,
+        sequence_id:               index + 1,
         type,
-        signal:      trigger.signal,
-        description: signalData.explanation,
-        severity:    signalData.severity,
-        timestamp:   trigger.timestamp
+        signal:                    trigger.signal,
+        description,
+        severity:                  signalData.severity,
+        timestamp:                 trigger.timestamp,
+        signal_intensity:          signalData.value,
+        elapsed_since_catalyst_ms: elapsedMs,
+        stress_contribution_pts:   contributionPts,
+        stress_contribution_pct:   contributionPct
       };
     });
 
     const catalyst  = this.triggerOrder[0]?.signal || null;
-    const narrative = this.generateNarrative(steps, stress);
+    const narrative = this.generateNarrative(steps, stress, velocity, patternLabel);
+    const riskAssessment = this.generateRiskAssessment(stress, signals, velocity, patternLabel);
 
     return {
       active: true,
       steps,
-      catalyst_id: catalyst,
+      catalyst_id:    catalyst,
       narrative,
-      risk_assessment:
-        stress.score > 80 ? 'CRITICAL: Structural failure imminent.'            :
-        stress.score > 60 ? 'UNSTABLE: Corrective action likely insufficient.'  :
-                            'ELEVATED: Monitoring catalyst propagation.'
+      risk_assessment: riskAssessment,
+      pattern_label:  patternLabel,
+      stress_velocity: safeNum(velocity, 0)
     };
   }
 
-  private generateNarrative(steps: CausalStep[], stress: StressScore): string {
+  private generateNarrative(
+    steps:        CausalStep[],
+    stress:       StressScore,
+    velocity:     number,
+    patternLabel: string | null
+  ): string {
     if (steps.length === 0) return '';
-    const catalyst     = steps[0].signal;
-    if (steps.length === 1) return `Event initiated by ${catalyst}.`;
-    const systemicCount = steps.filter(s => s.type === 'SYSTEMIC').length;
-    if (systemicCount > 0) {
-      return `Systemic breakdown initiated by ${catalyst}, now exacerbated by ${steps.length - 1} secondary amplifiers.`;
+
+    const catalystSignal = steps[0].signal;
+    const catalystIntensity = steps[0].signal_intensity;
+    const velStr = Math.abs(velocity) > 0.5
+      ? ` Stress ${velocity > 0 ? 'accelerating' : 'decelerating'} at ${velocity > 0 ? '+' : ''}${velocity.toFixed(1)}pts/tick.`
+      : '';
+    const label = patternLabel ? ` [${patternLabel}]` : '';
+
+    if (steps.length === 1) {
+      return `${catalystSignal} initiated the event at intensity ${catalystIntensity}/100.${velStr}${label}`;
     }
-    return `Tension detected in ${catalyst}, causing feedback in ${steps[steps.length - 1].signal}.`;
+
+    const latestSignal    = steps[steps.length - 1].signal;
+    const secondaryCount  = steps.length - 1;
+    const systemicCount   = steps.filter(s => s.type === 'SYSTEMIC').length;
+
+    if (systemicCount > 0 || stress.score > 80) {
+      const totalPts = steps.reduce((s, st) => s + st.stress_contribution_pts, 0);
+      return `Systemic breakdown — ${catalystSignal} detonated first (${steps[0].signal_intensity}/100), cascading through ${secondaryCount} subsequent vector${secondaryCount > 1 ? 's' : ''}. ${totalPts.toFixed(0)}pts of weighted stress converging.${velStr}${label}`;
+    }
+
+    if (steps.length === 2) {
+      const elapsed = steps[1].elapsed_since_catalyst_ms;
+      const elapsedStr = elapsed > 0
+        ? ` ${latestSignal} joined +${(elapsed / 1000).toFixed(0)}s later.`
+        : ` ${latestSignal} joined simultaneously.`;
+      return `${catalystSignal} cracked first.${elapsedStr}${velStr}${label}`;
+    }
+
+    return `${catalystSignal} led a ${steps.length}-signal convergence. ${stress.signals_aligned} structural anomalies active.${velStr}${label}`;
   }
 
+  private generateRiskAssessment(
+    stress:       StressScore,
+    signals:      Record<SignalType, SignalOutput>,
+    velocity:     number,
+    patternLabel: string | null
+  ): string {
+    const liq   = signals[SignalType.LIQUIDITY].value;
+    const flow  = signals[SignalType.FLOW].value;
+    const vol   = signals[SignalType.VOLATILITY].value;
+    const fsell = signals[SignalType.FORCED_SELLING].value;
+
+    const velNote = Math.abs(velocity) > 0.5
+      ? ` Rising ${velocity > 0 ? '+' : ''}${velocity.toFixed(1)}pts/tick.`
+      : '';
+
+    const label = patternLabel ? `${patternLabel} — ` : '';
+
+    const metricParts: string[] = [];
+    if (signals[SignalType.LIQUIDITY].triggered)      metricParts.push(`Depth −${liq.toFixed(0)}%`);
+    if (signals[SignalType.FLOW].triggered)           metricParts.push(`Sell flow ${flow.toFixed(0)}/100`);
+    if (signals[SignalType.VOLATILITY].triggered)     metricParts.push(`Vol ${vol.toFixed(0)}/100`);
+    if (signals[SignalType.FORCED_SELLING].triggered) metricParts.push(`Whale ${fsell.toFixed(0)}/100`);
+    const metrics = metricParts.length > 0 ? ` ${metricParts.join(', ')}.` : '';
+
+    if (stress.score > 80) {
+      return `CRITICAL: ${label}${stress.signals_aligned}-signal convergence at stress ${stress.score}.${metrics}${velNote} Structural failure imminent.`;
+    }
+    if (stress.score > 60) {
+      return `UNSTABLE: ${label}${stress.signals_aligned} vector${stress.signals_aligned > 1 ? 's' : ''} aligned at stress ${stress.score}.${metrics}${velNote} Corrective action likely insufficient.`;
+    }
+    return `ELEVATED: ${label}Monitoring catalyst propagation at stress ${stress.score}.${metrics}${velNote}`;
+  }
+
+  // ── Critical event detection ───────────────────────────────────────────────
+
   private detectCriticalEvent(
-    tick: NormalizedMarketTick,
-    stress: StressScore,
-    causal: CausalSequence,
+    tick:      NormalizedMarketTick,
+    stress:    StressScore,
+    causal:    CausalSequence,
     lastScore: number
   ): CriticalEvent | null {
-    // crossedThreshold: stress.score just crossed from ≤60 to >60 this tick.
-    // lastScore = trace.previous_score = smoothed score BEFORE this tick's EMA.
     const crossedThreshold = stress.score > 60 && lastScore <= 60;
-
-    // escalation: stress already above 60 AND a new signal just joined.
-    // Cooldown: require ≥60 s gap in exchange time between escalation events
-    // so a sustained elevated period doesn't flood the breach log.
-    const cooldownMs   = 60_000;
-    const cooledDown   = (tick.exchange_timestamp - this.lastEventExchangeTs) >= cooldownMs;
-    const escalation   = stress.score > 60
-                      && stress.signals_aligned > this.previousSignalsAligned
-                      && cooledDown;
+    const cooldownMs       = 60_000;
+    const cooledDown       = (tick.exchange_timestamp - this.lastEventExchangeTs) >= cooldownMs;
+    const escalation       = stress.score > 60
+                          && stress.signals_aligned > this.previousSignalsAligned
+                          && cooledDown;
 
     if (crossedThreshold || escalation) {
       const event: CriticalEvent = {
@@ -407,10 +524,11 @@ export class AnalyticsEngine {
         primary_factor: causal.catalyst_id || 'Unknown Catalyst',
         narrative:      causal.narrative,
         signals:        causal.steps.map(s => s.signal)
+        // snapshot is attached by App.tsx — AnalyticsEngine has no timeline access
       };
-      this.previousLevel            = stress.level;
-      this.previousSignalsAligned   = stress.signals_aligned;
-      this.lastEventExchangeTs      = tick.exchange_timestamp;
+      this.previousLevel          = stress.level;
+      this.previousSignalsAligned = stress.signals_aligned;
+      this.lastEventExchangeTs    = tick.exchange_timestamp;
       return event;
     }
 
@@ -419,21 +537,9 @@ export class AnalyticsEngine {
     return null;
   }
 
-  private getStressRank(level: StressLevel): number {
-    switch (level) {
-      case StressLevel.STABLE:    return 0;
-      case StressLevel.ELEVATED:  return 1;
-      case StressLevel.STRESSED:  return 2;
-      case StressLevel.UNSTABLE:  return 3;
-      case StressLevel.CRITICAL:  return 4;
-      default:                    return 0;
-    }
-  }
+  // ── Classification helpers ─────────────────────────────────────────────────
 
   private getSeverity(risk: number): StressLevel {
-    // FIX: was missing UNSTABLE — jumped from STRESSED directly to CRITICAL.
-    // classifyLevel (composite) correctly uses all 5 levels; now getSeverity
-    // (per-signal) is consistent with it.
     if (risk < 30) return StressLevel.STABLE;
     if (risk < 50) return StressLevel.ELEVATED;
     if (risk < 75) return StressLevel.STRESSED;
@@ -449,16 +555,22 @@ export class AnalyticsEngine {
     return StressLevel.CRITICAL;
   }
 
+  private getStressRank(level: StressLevel): number {
+    switch (level) {
+      case StressLevel.STABLE:   return 0;
+      case StressLevel.ELEVATED: return 1;
+      case StressLevel.STRESSED: return 2;
+      case StressLevel.UNSTABLE: return 3;
+      case StressLevel.CRITICAL: return 4;
+      default:                   return 0;
+    }
+  }
+
   private defaultSignal(name: SignalType, ts: number): SignalOutput {
     return {
-      name,
-      value: 0,
-      severity:   StressLevel.STABLE,
-      triggered:  false,
-      raw_metrics: {},
-      explanation: 'Insufficient data.',
-      confidence:  ConfidenceLevel.LOW,
-      timestamp:   ts
+      name, value: 0, severity: StressLevel.STABLE, triggered: false,
+      raw_metrics: {}, explanation: 'Insufficient data.',
+      confidence: ConfidenceLevel.LOW, timestamp: ts
     };
   }
 }
