@@ -70,14 +70,14 @@ const App: React.FC = () => {
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
   const [isAppReady, setIsAppReady] = useState(false);
 
-  const analyticsRef         = useRef<AnalyticsEngine>(new AnalyticsEngine());
-  const audioRef             = useRef<AudioEngine>(new AudioEngine());
-  const binanceRef           = useRef<BinanceService | null>(null);
-  const simTimerRef          = useRef<any>(null);
-  const simStepRef           = useRef<number>(0);
-  const historicalPointsRef  = useRef<HistoricalDataPoint[]>([]);
-  const isPausedRef          = useRef<boolean>(false);
-  const historyLoader        = useMemo(() => new HistoricalDataLoader(), []);
+  const analyticsRef = useRef<AnalyticsEngine>(new AnalyticsEngine());
+  const audioRef = useRef<AudioEngine>(new AudioEngine());
+  const binanceRef = useRef<BinanceService | null>(null);
+  const simTimerRef = useRef<any>(null);
+  const simStepRef = useRef<number>(0);
+  const historicalPointsRef = useRef<HistoricalDataPoint[]>([]);
+  const isPausedRef = useRef<boolean>(false);
+  const historyLoader = useMemo(() => new HistoricalDataLoader(), []);
 
   useEffect(() => { historicalPointsRef.current = historicalPoints; }, [historicalPoints]);
   useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
@@ -113,8 +113,8 @@ const App: React.FC = () => {
       if (result.criticalEvent) logCriticalEvent(result.criticalEvent);
       setTimelineData(prev => [...prev, {
         timestamp: tick.exchange_timestamp,
-        price:     tick.price,
-        stress:    result.stress.score
+        price: tick.price,
+        stress: result.stress.score
       }].slice(-100));
     } catch (err) {
       console.error('[Sentinel] handleLiveTick error:', err);
@@ -139,61 +139,30 @@ const App: React.FC = () => {
     }
   }, [historyLoader]);
 
-  // FIX: seek was calling analyticsRef.current.processTick(tick) with the engine
-  // in whatever random state it was in from playback — stale buffers, wrong context.
-  // Displayed metrics after a seek were computed on meaningless state.
-  //
-  // Fix: on seek, reset the real engine and replay from (stepIndex - 200) through
-  // stepIndex in ONE pass. This builds the timeline AND warms the engine to the
-  // correct state simultaneously. The final result of that pass is used for display.
-  // 200 ticks of warmup = enough for all buffers to reach HIGH confidence.
   const runHistoryStep = useCallback((stepIndex: number, isSeeking = false) => {
     try {
-      const points = historicalPointsRef.current;
-      const point  = points[stepIndex];
+      const point = historicalPointsRef.current[stepIndex];
       if (!point) return;
+      const tick = historyLoader.convertToTick(point);
 
       if (isSeeking) {
-        // Reset real engine and warm it through the seek range in one pass
-        analyticsRef.current.reset();
-        const startIdx   = Math.max(0, stepIndex - 200);
         const seekPoints: TimelineDataPoint[] = [];
-        let seekResult: ReturnType<AnalyticsEngine['processTick']> | null = null;
-        let seekTick: NormalizedMarketTick | null = null;
-
+        const startIdx = Math.max(0, stepIndex - 100);
+        const tempAnalytics = new AnalyticsEngine();
         for (let i = startIdx; i <= stepIndex; i++) {
-          const hPoint = points[i];
-          if (!hPoint) continue;
-          const hTick = historyLoader.convertToTick(hPoint);
-          const res   = analyticsRef.current.processTick(hTick);
-          seekResult  = res;
-          seekTick    = hTick;
-          seekPoints.push({
-            timestamp: hTick.exchange_timestamp,
-            price:     hTick.price,
-            stress:    res.stress.score,
-            label:     hPoint.close < hPoint.open * 0.95 ? 'MAJOR DROP' : null
-          });
+          const hPoint = historicalPointsRef.current[i];
+          if (hPoint) {
+            const hTick = historyLoader.convertToTick(hPoint);
+            const res = tempAnalytics.processTick(hTick);
+            seekPoints.push({ timestamp: hTick.exchange_timestamp, price: hTick.price, stress: res.stress.score, label: hPoint.close < hPoint.open * 0.95 ? 'MAJOR DROP' : null });
+          }
         }
-
-        // Guard: recharts crashes with <2 points (XAxis domain [t,t] → step=0 → invariant)
+        // Guard: recharts crashes with 1 point (XAxis domain [t,t] → step=0 → invariant).
+        // If seek produced fewer than 2 points (e.g. seeking to position 0), pass empty
+        // so the chart shows the placeholder rather than throwing.
         setTimelineData(seekPoints.length >= 2 ? seekPoints : []);
-
-        if (seekResult && seekTick) {
-          setLastTick(seekTick);
-          setSignals(seekResult.signals);
-          setStress(seekResult.stress);
-          setCausal(seekResult.causal);
-          setTrace(seekResult.trace);
-          if (seekResult.stress) audioRef.current.setStress(seekResult.stress.score);
-        }
-        // Return here — engine is now warmed to correct state, display is updated.
-        // Do NOT fall through to the extra processTick call below.
-        return;
       }
 
-      // Normal (non-seek) step — engine already has correct context from playback
-      const tick   = historyLoader.convertToTick(point);
       const result = analyticsRef.current.processTick(tick);
       setLastTick(tick);
       setSignals(result.signals);
@@ -201,13 +170,15 @@ const App: React.FC = () => {
       setCausal(result.causal);
       setTrace(result.trace);
       if (result.stress) audioRef.current.setStress(result.stress.score);
-      if (result.criticalEvent) logCriticalEvent(result.criticalEvent);
-      setTimelineData(prev => [...prev, {
-        timestamp: tick.exchange_timestamp,
-        price:     tick.price,
-        stress:    result.stress.score,
-        label:     point.close < point.open * 0.95 ? 'VOLATILITY SPIKE' : null
-      }].slice(-100));
+      if (result.criticalEvent && !isSeeking) logCriticalEvent(result.criticalEvent);
+      if (!isSeeking) {
+        setTimelineData(prev => [...prev, {
+          timestamp: tick.exchange_timestamp,
+          price: tick.price,
+          stress: result.stress.score,
+          label: point.close < point.open * 0.95 ? 'VOLATILITY SPIKE' : null
+        }].slice(-100));
+      }
     } catch (err) {
       console.error('[Sentinel] runHistoryStep error at index', stepIndex, err);
     }
@@ -231,9 +202,8 @@ const App: React.FC = () => {
     if (mode === 'LIVE') {
       setConnectionStatus('DISCONNECTED');
       binanceRef.current = new BinanceService(handleLiveTick);
-      // FIX: start() is async (clock sync + WebSocket open). Awaiting it before
-      // marking CONNECTED prevents the UI showing STREAMING before sockets are open.
-      binanceRef.current.start().then(() => setConnectionStatus('CONNECTED'));
+      binanceRef.current.start();
+      setConnectionStatus('CONNECTED');
     } else {
       setConnectionStatus('HISTORICAL');
       loadCovidData();
@@ -245,10 +215,10 @@ const App: React.FC = () => {
     };
   }, [mode, handleLiveTick, loadCovidData]);
 
-  // Playback loop — three speeds: 1×, 50×, 100×
-  // 1×   = 1 candle/sec  (1 step every 1000ms)
-  // 50×  = 50 candles/sec (2 steps every 40ms)
-  // 100× = 100 candles/sec (5 steps every 50ms)
+  // Playback loop — three speeds only: 1×, 50×, 100×
+  // 1×  = 1 candle/sec  (1 step every 1000ms)
+  // 50× = 50 candles/sec (2 steps every 40ms)
+  // 100×= 100 candles/sec (5 steps every 50ms)
   useEffect(() => {
     clearInterval(simTimerRef.current);
     if (mode !== 'HISTORICAL' || isPaused || historicalPoints.length === 0) return;
@@ -264,7 +234,7 @@ const App: React.FC = () => {
       let lastResult: any = null;
       let lastTick: NormalizedMarketTick | null = null;
       let lastPoint: HistoricalDataPoint | null = null;
-      let finalStep  = simStepRef.current;
+      let finalStep = simStepRef.current;
       let reachedEnd = false;
 
       for (let i = 0; i < stepsPerTick; i++) {
@@ -273,26 +243,25 @@ const App: React.FC = () => {
         simStepRef.current = nextStep;
         finalStep = nextStep;
         try {
-          const point  = points[nextStep];
-          const tick   = historyLoader.convertToTick(point);
+          const point = points[nextStep];
+          const tick = historyLoader.convertToTick(point);
           const result = analyticsRef.current.processTick(tick);
           lastResult = result;
-          lastTick   = tick;
-          lastPoint  = point;
+          lastTick = tick;
+          lastPoint = point;
           if (result.criticalEvent) logCriticalEvent(result.criticalEvent);
-        } catch (e) {
+        } catch(e) {
           console.error('[Sentinel] batch step error at', finalStep, e);
         }
       }
 
       if (reachedEnd) {
-        // Auto-restart: reset engine and step, clear timeline — but KEEP breach log
-        // so the user's logged events are not lost on loop.
+        // Auto-restart: reset to beginning and replay from scratch
         analyticsRef.current.reset();
         simStepRef.current = 0;
         setSimStep(0);
         setTimelineData([]);
-        // NOTE: setCriticalLog([]) removed — was wiping all breach events on every loop.
+        setCriticalLog([]);
         return;
       }
 
@@ -306,9 +275,9 @@ const App: React.FC = () => {
         if (lastResult.stress) audioRef.current.setStress(lastResult.stress.score);
         setTimelineData(prev => [...prev, {
           timestamp: lastTick!.exchange_timestamp,
-          price:     lastTick!.price,
-          stress:    lastResult.stress.score,
-          label:     lastPoint!.close < lastPoint!.open * 0.95 ? 'VOLATILITY SPIKE' : null
+          price: lastTick!.price,
+          stress: lastResult.stress.score,
+          label: lastPoint!.close < lastPoint!.open * 0.95 ? 'VOLATILITY SPIKE' : null
         }].slice(-100));
       }
     }, intervalMs);
@@ -327,18 +296,6 @@ const App: React.FC = () => {
         <div className="flex flex-col items-center gap-2">
           <span className="text-cyan-400 font-mono text-sm uppercase tracking-[0.3em]">Sentinel</span>
           <span className="text-gray-600 font-mono text-[10px] uppercase tracking-widest animate-pulse">Connecting to Binance...</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (isLoadingHistory) {
-    return (
-      <div className="min-h-screen bg-[#0a0e14] flex flex-col items-center justify-center gap-6">
-        <div className="w-16 h-16 border-2 border-amber-500/30 border-t-amber-400 rounded-full animate-spin" />
-        <div className="flex flex-col items-center gap-2">
-          <span className="text-amber-400 font-mono text-sm uppercase tracking-[0.3em]">Sentinel</span>
-          <span className="text-gray-600 font-mono text-[10px] uppercase tracking-widest animate-pulse">Loading COVID Crash Dataset...</span>
         </div>
       </div>
     );
@@ -481,12 +438,7 @@ const App: React.FC = () => {
 
           <TimelineChart data={timelineData} />
 
-          {/* FIX: was flex-1 overflow-hidden min-h-0 — panels grew to fill remaining space.
-              Fixed to h-[320px] so both panels stay the exact same size as when the app
-              loads, regardless of how many logs accumulate. Content scrolls inside. */}
-          <div className="grid grid-cols-12 gap-4 h-[320px] overflow-hidden">
-
-            {/* ── Causality Engine ── */}
+          <div className="grid grid-cols-12 gap-4 flex-1 overflow-hidden min-h-0">
             <div className="col-span-12 lg:col-span-5 bg-[#151a23] border border-gray-800 rounded-xl p-5 flex flex-col overflow-hidden relative shadow-lg">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-[11px] font-black text-amber-500 uppercase tracking-[0.3em] flex items-center gap-2">
@@ -509,13 +461,7 @@ const App: React.FC = () => {
                           <span className={`text-[8px] font-mono px-2 py-0.5 rounded uppercase tracking-tighter ${step.type === 'CATALYST' ? 'bg-amber-500 text-black font-black shadow-[0_0_10px_rgba(245,158,11,0.4)]' : step.type === 'SYSTEMIC' ? 'bg-red-500 text-white font-black' : 'bg-gray-800 text-gray-500 font-bold'}`}>{step.type}</span>
                           <div className="text-xs font-black text-white uppercase tracking-tight font-mono">{step.signal}</div>
                         </div>
-                        {/* FIX: was Date.now() - step.timestamp. step.timestamp is now
-                            exchange_timestamp (e.g. March 2020). Date.now() - that =
-                            ~5 years in ms, shown as T+157766400s. Nonsense.
-                            Now shows the actual historical event time as HH:MM:SS. */}
-                        <span className="text-[9px] text-gray-700 font-mono italic">
-                          {new Date(step.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                        </span>
+                        <span className="text-[9px] text-gray-700 font-mono italic">T+{Math.round((Date.now() - step.timestamp)/1000)}s</span>
                       </div>
                       <p className="text-[11px] text-gray-400 leading-snug font-sans bg-gray-900/50 p-3 rounded-lg border border-gray-800/80 hover:border-gray-700 transition-colors shadow-inner">{step.description}</p>
                     </div>
@@ -537,11 +483,6 @@ const App: React.FC = () => {
               )}
             </div>
 
-            {/* ── Breach Log ── */}
-            {/* FIX: outer container is now part of the h-[320px] fixed grid row.
-                flex flex-col + overflow-hidden on the card means the inner
-                flex-1 overflow-y-auto scroll area is strictly bounded — logs
-                scroll inside, the panel never grows. */}
             <div className="col-span-12 lg:col-span-7 bg-[#151a23] border border-gray-800 rounded-xl p-5 flex flex-col overflow-hidden shadow-2xl relative">
               <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 blur-[80px] rounded-full pointer-events-none z-0" />
               <div className="flex justify-between items-center mb-5 relative z-10">
@@ -556,46 +497,45 @@ const App: React.FC = () => {
                   <button type="button" onClick={(e) => clearAllIncidents(e)} className="text-[9px] text-gray-200 font-black font-mono px-3 py-1 bg-gray-800 hover:bg-gray-700 active:bg-gray-600 rounded border border-gray-700 transition-all uppercase tracking-widest shadow-lg cursor-pointer hover:border-gray-400">Flush</button>
                 </div>
               </div>
-              {/* overflow-y-auto + flex-1 = scrolls within fixed panel height, never stretches */}
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar relative z-10 min-h-0">
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar relative z-10">
                 {criticalLog.length > 0 ? criticalLog.map((event, eventIdx) => {
+                  // Map full signal names to short abbreviations for the Vectors row
                   const getVectorTag = (sig: string) => {
                     if (sig.includes('Liquidity')) return 'LIQ';
-                    if (sig.includes('Flow'))       return 'FLOW';
-                    if (sig.includes('Volatility')) return 'VOL';
-                    if (sig.includes('Forced'))     return 'SELL';
+                    if (sig.includes('Flow'))      return 'FLOW';
+                    if (sig.includes('Volatility'))return 'VOL';
+                    if (sig.includes('Forced'))    return 'SELL';
                     return sig.split(' ')[0];
                   };
                   return (
-                    <div key={event.id} className="p-4 bg-[#0a0e14]/40 backdrop-blur-md border border-gray-800/60 rounded-xl hover:border-gray-600 transition-all group relative overflow-hidden shadow-sm">
-                      <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${event.stress_score > 80 ? 'bg-red-500 shadow-[0_0_15px_rgba(239,68,68,0.6)]' : 'bg-amber-500'}`} />
-                      <div className="flex justify-between items-start mb-2.5">
-                        <div className="flex flex-col">
-                          <span className={`text-[10px] font-black font-mono uppercase tracking-tight ${event.stress_score > 80 ? 'text-red-400' : 'text-gray-300'}`}>{event.level} REGIME</span>
-                          <span className="text-[9px] text-gray-600 font-mono">
-                            {new Date(event.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })} • #{criticalLog.length - eventIdx}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="text-right">
-                            <div className="text-[13px] font-black text-white font-mono tracking-tighter">${event.price.toLocaleString(undefined, { minimumFractionDigits: 1 })}</div>
-                            <div className={`text-[9px] font-black font-mono ${event.stress_score > 70 ? 'text-red-500' : 'text-amber-500'}`}>STRESS: {event.stress_score}</div>
-                          </div>
-                          <button type="button" onClick={() => removeIncident(event.id)} className="opacity-0 group-hover:opacity-100 p-1.5 bg-gray-800 hover:bg-red-900/40 text-gray-500 hover:text-red-500 rounded border border-gray-700 hover:border-red-900/60 transition-all" title="Remove Incident">
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                          </button>
-                        </div>
+                  <div key={event.id} className="p-4 bg-[#0a0e14]/40 backdrop-blur-md border border-gray-800/60 rounded-xl hover:border-gray-600 transition-all group relative overflow-hidden shadow-sm">
+                    <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${event.stress_score > 80 ? 'bg-red-500 shadow-[0_0_15px_rgba(239,68,68,0.6)]' : 'bg-amber-500'}`} />
+                    <div className="flex justify-between items-start mb-2.5">
+                      <div className="flex flex-col">
+                        <span className={`text-[10px] font-black font-mono uppercase tracking-tight ${event.stress_score > 80 ? 'text-red-400' : 'text-gray-300'}`}>{event.level} REGIME</span>
+                        <span className="text-[9px] text-gray-600 font-mono">
+                          {new Date(event.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })} • #{criticalLog.length - eventIdx}
+                        </span>
                       </div>
-                      <div className="text-[11px] text-gray-400 leading-snug mb-3 font-sans opacity-90 group-hover:opacity-100 border-l border-gray-800/80 pl-4 py-1 italic bg-gray-900/20 rounded-r">{event.narrative}</div>
-                      <div className="flex gap-2 flex-wrap items-center">
-                        <span className="text-[8px] text-gray-700 uppercase font-mono font-bold tracking-widest">Signals:</span>
-                        {event.signals.map((sig, idx) => (
-                          <span key={idx} className="text-[8px] bg-[#0a0e14] text-blue-400 px-2 py-0.5 rounded-sm border border-blue-500/10 font-mono font-black hover:border-blue-400/50 transition-colors shadow-inner">{getVectorTag(sig)}</span>
-                        ))}
+                      <div className="flex items-center gap-3">
+                        <div className="text-right">
+                          <div className="text-[13px] font-black text-white font-mono tracking-tighter">${event.price.toLocaleString(undefined, { minimumFractionDigits: 1 })}</div>
+                          <div className={`text-[9px] font-black font-mono ${event.stress_score > 70 ? 'text-red-500' : 'text-amber-500'}`}>STRESS: {event.stress_score}</div>
+                        </div>
+                        <button type="button" onClick={() => removeIncident(event.id)} className="opacity-0 group-hover:opacity-100 p-1.5 bg-gray-800 hover:bg-red-900/40 text-gray-500 hover:text-red-500 rounded border border-gray-700 hover:border-red-900/60 transition-all" title="Remove Incident">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        </button>
                       </div>
                     </div>
-                  );
-                }) : (
+                    <div className="text-[11px] text-gray-400 leading-snug mb-3 font-sans opacity-90 group-hover:opacity-100 border-l border-gray-800/80 pl-4 py-1 italic bg-gray-900/20 rounded-r">{event.narrative}</div>
+                    <div className="flex gap-2 flex-wrap items-center">
+                      <span className="text-[8px] text-gray-700 uppercase font-mono font-bold tracking-widest">Signals:</span>
+                      {event.signals.map((sig, idx) => (
+                        <span key={idx} className="text-[8px] bg-[#0a0e14] text-blue-400 px-2 py-0.5 rounded-sm border border-blue-500/10 font-mono font-black hover:border-blue-400/50 transition-colors shadow-inner">{getVectorTag(sig)}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}) : (
                   <div className="h-full flex flex-col items-center justify-center text-gray-800 space-y-3 opacity-30">
                     <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={0.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                     <span className="text-[9px] font-mono italic uppercase tracking-[0.4em] text-center">No breach events logged</span>
@@ -607,7 +547,6 @@ const App: React.FC = () => {
                 <span className="text-[9px] text-gray-700 font-mono font-bold">SENTINEL</span>
               </div>
             </div>
-
           </div>
         </div>
       </main>
