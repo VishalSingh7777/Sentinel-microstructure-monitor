@@ -484,7 +484,7 @@ const App: React.FC = () => {
           {/* FIX: was flex-1 overflow-hidden min-h-0 — panels grew to fill remaining space.
               Fixed to h-[320px] so both panels stay the exact same size as when the app
               loads, regardless of how many logs accumulate. Content scrolls inside. */}
-          <div className="grid grid-cols-12 gap-4 h-[950px] overflow-hidden">
+          <div className="grid grid-cols-12 gap-4 h-[990px] overflow-hidden">
 
             {/* ── Causality Engine ── */}
             <div className="col-span-12 lg:col-span-5 bg-[#151a23] border border-gray-800 rounded-xl p-5 flex flex-col overflow-hidden relative shadow-lg">
@@ -538,7 +538,7 @@ const App: React.FC = () => {
             </div>
 
             {/* ── Breach Log ── */}
-            {/* FIX: outer container is now part of the h-[950px] fixed grid row.
+            {/* FIX: outer container is now part of the h-[990px] fixed grid row.
                 flex flex-col + overflow-hidden on the card means the inner
                 flex-1 overflow-y-auto scroll area is strictly bounded — logs
                 scroll inside, the panel never grows. */}
