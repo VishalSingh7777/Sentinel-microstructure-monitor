@@ -484,7 +484,7 @@ const App: React.FC = () => {
           {/* FIX: was flex-1 overflow-hidden min-h-0 — panels grew to fill remaining space.
               Fixed to h-[320px] so both panels stay the exact same size as when the app
               loads, regardless of how many logs accumulate. Content scrolls inside. */}
-          <div className="grid grid-cols-12 gap-4 h-[900px] overflow-hidden">
+          <div className="grid grid-cols-12 gap-4 h-[960px] overflow-hidden">
 
             {/* ── Causality Engine ── */}
             <div className="col-span-12 lg:col-span-5 bg-[#151a23] border border-gray-800 rounded-xl p-5 flex flex-col overflow-hidden relative shadow-lg">
