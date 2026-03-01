@@ -40,50 +40,64 @@ export interface SignalOutput {
 }
 
 export interface StressScore {
-  score:           number;
-  raw_score:       number;
-  level:           StressLevel;
-  color:           string;
-  signals_aligned: number;
-  confidence:      ConfidenceLevel;
-  breakdown:       Record<string, number>;
-  timestamp:       number;
+  score:            number;
+  raw_score:        number;
+  level:            StressLevel;
+  color:            string;
+  signals_aligned:  number;
+  confidence:       ConfidenceLevel;
+  breakdown:        Record<string, number>;
+  timestamp:        number;
 }
 
 export interface CausalStep {
-  sequence_id: number;
-  type:        'CATALYST' | 'AMPLIFIER' | 'SYSTEMIC';
-  signal:      SignalType;
-  description: string;
-  severity:    StressLevel;
-  timestamp:   number;
-  // Optional enrichment fields — set by advanced engine builds, safe to omit
-  signal_intensity?:          number;
-  elapsed_since_catalyst_ms?: number;
-  stress_contribution_pts?:   number;
-  stress_contribution_pct?:   number;
+  sequence_id:                number;
+  type:                       'CATALYST' | 'AMPLIFIER' | 'SYSTEMIC';
+  signal:                     SignalType;
+  description:                string;
+  severity:                   StressLevel;
+  timestamp:                  number;
+  // NEW: how loud this signal is (0-100 raw value)
+  signal_intensity:           number;
+  // NEW: how many ms have elapsed since the CATALYST first fired
+  elapsed_since_catalyst_ms:  number;
+  // NEW: this signal's weighted contribution to total stress (pts, not %)
+  stress_contribution_pts:    number;
+  // NEW: this signal's share of the weighted total (0-100 %)
+  stress_contribution_pct:    number;
 }
 
 export interface CausalSequence {
-  active:          boolean;
-  steps:           CausalStep[];
-  catalyst_id:     SignalType | null;
-  narrative:       string;
-  risk_assessment: string;
-  // Optional enrichment fields — set by advanced engine builds, safe to omit
-  pattern_label?:   string | null;
-  stress_velocity?: number;
+  active:           boolean;
+  steps:            CausalStep[];
+  catalyst_id:      SignalType | null;
+  narrative:        string;
+  risk_assessment:  string;
+  // NEW: named structural pattern based on which signals are co-active
+  pattern_label:    string | null;
+  // NEW: average stress change per tick over last 5 ticks (+ve = rising)
+  stress_velocity:  number;
 }
 
-// Full market state captured at the moment a critical event fires.
-// Used by the Snapshot feature to freeze the UI to that exact moment.
+export interface TimelineDataPoint {
+  timestamp:       number;
+  price:           number;
+  stress:          number;
+  pointOfNoReturn?: boolean;
+  label?:          string | null;
+}
+
+// A complete market state captured at the moment a critical event fires.
+// Used by the Snapshot feature so any breach log entry can freeze the UI
+// to show exactly what the market looked like when that event occurred.
 export interface MarketSnapshot {
-  stress:            StressScore;
-  signals:           Record<SignalType, SignalOutput>;
-  causal:            CausalSequence;
-  trace:             DecisionTrace;
-  tick:              NormalizedMarketTick;
-  timelineAtCapture: TimelineDataPoint[];
+  stress:             StressScore;
+  signals:            Record<SignalType, SignalOutput>;
+  causal:             CausalSequence;
+  trace:              DecisionTrace;
+  tick:               NormalizedMarketTick;
+  // last 100 timeline points up to (and including) the capture moment
+  timelineAtCapture:  TimelineDataPoint[];
 }
 
 export interface CriticalEvent {
@@ -95,7 +109,7 @@ export interface CriticalEvent {
   primary_factor: SignalType | string;
   narrative:      string;
   signals:        SignalType[];
-  // Attached by App.tsx when the event is logged — not set by AnalyticsEngine
+  // snapshot is attached by App.tsx when the event is logged
   snapshot?:      MarketSnapshot;
 }
 
@@ -120,14 +134,6 @@ export interface NormalizedMarketTick {
   total_depth:  number;
   is_valid:     boolean;
   data_quality: 'GOOD' | 'DEGRADED' | 'STALE';
-}
-
-export interface TimelineDataPoint {
-  timestamp:        number;
-  price:            number;
-  stress:           number;
-  pointOfNoReturn?: boolean;
-  label?:           string | null;
 }
 
 export interface WeightContribution {
