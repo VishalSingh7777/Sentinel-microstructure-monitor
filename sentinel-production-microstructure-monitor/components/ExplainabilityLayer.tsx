@@ -2,17 +2,10 @@ import React from 'react';
 import { DecisionTrace, StressScore, SignalOutput, StressLevel, ConfidenceLevel } from '../types';
 
 interface ExplainabilityLayerProps {
-  trace:   DecisionTrace | null;
-  stress:  StressScore   | null;
+  trace: DecisionTrace | null;
+  stress: StressScore | null;
   signals: Record<string, SignalOutput> | null;
 }
-
-// Safe number: if the value is undefined/NaN/Infinity, return 0.
-// This is the defensive layer between runtime data and .toFixed() calls.
-// TypeScript says trace fields are numbers, but if a future engine build
-// returns an incomplete object, undefined.toFixed() would crash the app.
-const n = (v: number | undefined | null, fallback = 0): number =>
-  typeof v === 'number' && isFinite(v) && !isNaN(v) ? v : fallback;
 
 export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace, stress, signals }) => {
   if (!trace || !stress || !signals) {
@@ -25,10 +18,10 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
   }
 
   const getSignalShort = (name: string) => {
-    if (name.includes('Liquidity'))  return 'LIQ';
-    if (name.includes('Flow'))       return 'FLOW';
+    if (name.includes('Liquidity')) return 'LIQ';
+    if (name.includes('Flow')) return 'FLOW';
     if (name.includes('Volatility')) return 'VOL';
-    if (name.includes('Forced'))     return 'SELL';
+    if (name.includes('Forced')) return 'SELL';
     return 'UNK';
   };
 
@@ -39,7 +32,7 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
       case StressLevel.STRESSED: return 'text-orange-400';
       case StressLevel.UNSTABLE:
       case StressLevel.CRITICAL: return 'text-red-500';
-      default:                   return 'text-gray-400';
+      default: return 'text-gray-400';
     }
   };
 
@@ -49,17 +42,11 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
     return 'text-gray-500 bg-gray-500/10';
   };
 
-  // Re-derive the EMA for independent verification of the engine's output.
-  // All trace fields wrapped in n() so undefined/NaN fields never crash this calculation.
-  const smoothingAlpha   = n(trace.smoothing_alpha, 0.35);
-  const preSmooth        = n(trace.pre_smooth_score, 0);
-  const previousScore    = n(trace.previous_score,   0);
-  const rawScore         = n(trace.raw_score,        0);
-  const shockMultiplier  = n(trace.shock_multiplier, 1);
-
-  const derivedSmoothed  = smoothingAlpha * preSmooth + (1 - smoothingAlpha) * previousScore;
-  const derivedFinal     = Math.round(derivedSmoothed);
-  const verified         = derivedFinal === n(trace.final_score, -1);
+  // Re-derive the EMA so we can verify it matches what the engine computed
+  const derivedSmoothed = trace.smoothing_alpha * trace.pre_smooth_score +
+                          (1 - trace.smoothing_alpha) * trace.previous_score;
+  const derivedFinal = Math.round(derivedSmoothed);
+  const verified = derivedFinal === trace.final_score;
 
   return (
     <div className="bg-[#0d1117] border border-gray-800 rounded-xl overflow-hidden flex flex-col shadow-2xl animate-in fade-in duration-500">
@@ -68,13 +55,21 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
       <div className="px-6 py-3 border-b border-gray-800 flex justify-between items-center bg-[#151a23]">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_#22d3ee]" />
+          {/*
+            RENAMED: "Reasoning Engine Audit" → "Score Computation Trace"
+            - No reasoning or inference happens here — it's pure arithmetic
+            - No engine — this is a passive read-only trace of what was computed
+            - Not an audit of something external — this IS the calculation itself
+            "Score Computation Trace" describes exactly what the panel shows:
+            the step-by-step trace of how the stress score was computed this tick.
+          */}
           <h2 className="text-[10px] font-black text-cyan-400 uppercase tracking-[0.3em] font-mono">Score Computation Trace</h2>
         </div>
         <div className="flex items-center gap-6 font-mono text-[10px]">
           <span className="text-gray-600 uppercase">
-            Prev <span className="text-gray-400">{previousScore.toFixed(1)}</span>
+            Prev <span className="text-gray-400">{trace.previous_score.toFixed(1)}</span>
             <span className="text-gray-700 mx-2">→</span>
-            Final <span className="text-white font-bold">{n(trace.final_score, 0)}</span>
+            Final <span className="text-white font-bold">{trace.final_score}</span>
           </span>
           <span className={`text-[8px] font-black px-2 py-0.5 rounded uppercase tracking-widest border ${verified ? 'text-emerald-400 bg-emerald-400/10 border-emerald-800' : 'text-red-400 bg-red-400/10 border-red-900'}`}>
             {verified ? '✓ Math verified' : '⚠ Mismatch'}
@@ -88,15 +83,15 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
         <div className="col-span-12 lg:col-span-4 flex flex-col gap-4">
           <h3 className="text-[8px] text-cyan-400/60 uppercase tracking-widest font-mono">01 · Weight Decomposition</h3>
           <div className="space-y-4">
-            {(Array.isArray(trace.weight_contributions) ? [...trace.weight_contributions] : [])
-              .sort((a, b) => n(b.contribution) - n(a.contribution))
+            {[...trace.weight_contributions]
+              .sort((a, b) => b.contribution - a.contribution)
               .map((contrib, i) => {
-                const sigData       = signals[contrib.signal];
-                // Re-derive from first principles so display is verifiable independently
-                const weight        = n(contrib.weight,    0);
-                const rawVal        = n(contrib.raw_value, 0);
-                const derivedContrib = weight * rawVal;
-                const derivedPct     = rawScore > 0 ? (derivedContrib / rawScore) * 100 : 0;
+                const sigData = signals[contrib.signal];
+                // Re-derive contribution and pct so display is independently correct
+                const derivedContrib = contrib.weight * contrib.raw_value;
+                const derivedPct = trace.raw_score > 0
+                  ? (derivedContrib / trace.raw_score) * 100
+                  : 0;
                 return (
                   <div key={i} className="flex flex-col gap-1.5">
                     <div className="flex justify-between items-center">
@@ -105,14 +100,14 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
                         <span className="text-[9px] font-black text-white font-mono">{getSignalShort(contrib.signal)}</span>
                       </div>
                       <span className="text-[9px] font-mono text-gray-500 italic">
-                        {(weight * 100).toFixed(0)}% × {rawVal} = <span className="text-gray-300">{derivedContrib.toFixed(1)}</span>
+                        {(contrib.weight * 100).toFixed(0)}% × {contrib.raw_value} = <span className="text-gray-300">{derivedContrib.toFixed(1)}</span>
                         <span className="text-gray-700 ml-1">({derivedPct.toFixed(0)}%)</span>
                       </span>
                     </div>
                     <div className="h-1.5 bg-gray-900 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-cyan-500/80 transition-all duration-700"
-                        style={{ width: `${Math.min(100, Math.max(0, n(derivedPct, 0)))}%` }}
+                        style={{ width: `${Math.min(100, derivedPct)}%` }}
                       />
                     </div>
                   </div>
@@ -122,12 +117,21 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
           <div className="mt-2 pt-3 border-t border-gray-800/50 flex justify-between items-center">
             <span className="text-[9px] text-gray-500 font-mono uppercase">Σ Raw Weighted Score</span>
             <span className="text-sm font-black text-white font-mono">
-              {rawScore.toFixed(1)} <span className="text-[10px] font-normal text-gray-600">pts</span>
+              {trace.raw_score.toFixed(1)} <span className="text-[10px] font-normal text-gray-600">pts</span>
             </span>
           </div>
         </div>
 
         {/* ── 02: Score Pipeline ── */}
+        {/*
+          FIX: added "Prev Score" box into the pipeline.
+          Old chain: Raw → Shock × → Pre-Smooth → Alpha → Final
+          Problem: you cannot verify Final without knowing previousStress.
+          EMA formula is: α × Pre-Smooth + (1-α) × Prev = smoothed
+          Without Prev visible, the last step is a black box.
+          New chain: Raw × Shock = Pre-Smooth —EMA(α, Prev)→ Final
+          Now every number needed to verify the output is visible.
+        */}
         <div className="col-span-12 lg:col-span-8 flex flex-col gap-4">
           <h3 className="text-[8px] text-cyan-400/60 uppercase tracking-widest font-mono">02 · Score Pipeline</h3>
           <div className="flex items-center gap-1.5 overflow-x-auto pb-2 scrollbar-none">
@@ -135,20 +139,20 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
             {/* Raw */}
             <div className="flex-1 min-w-[82px] bg-gray-900/50 border border-gray-800 rounded p-2.5 flex flex-col items-center">
               <span className="text-[7px] text-gray-500 uppercase mb-1">Raw Weighted</span>
-              <span className="text-base font-black text-white font-mono">{rawScore.toFixed(1)}</span>
+              <span className="text-base font-black text-white font-mono">{trace.raw_score.toFixed(1)}</span>
               <span className="text-[7px] text-gray-600 uppercase mt-1">Σ(val × wt)</span>
             </div>
 
             <span className="text-gray-700 text-[10px]">×</span>
 
             {/* Shock */}
-            <div className={`flex-1 min-w-[82px] border rounded p-2.5 flex flex-col items-center ${(trace.signals_aligned ?? 0) > 0 ? 'bg-orange-500/10 border-orange-500/30' : 'bg-gray-900/50 border-gray-800'}`}>
+            <div className={`flex-1 min-w-[82px] border rounded p-2.5 flex flex-col items-center ${trace.signals_aligned > 0 ? 'bg-orange-500/10 border-orange-500/30' : 'bg-gray-900/50 border-gray-800'}`}>
               <span className="text-[7px] text-gray-500 uppercase mb-1">Shock</span>
-              <span className={`text-base font-black font-mono ${(trace.signals_aligned ?? 0) > 0 ? 'text-orange-400' : 'text-white'}`}>
-                {shockMultiplier.toFixed(2)}×
+              <span className={`text-base font-black font-mono ${trace.signals_aligned > 0 ? 'text-orange-400' : 'text-white'}`}>
+                {trace.shock_multiplier.toFixed(2)}×
               </span>
               <span className="text-[7px] text-gray-600 uppercase mt-1">
-                1+({trace.signals_aligned ?? 0}×0.08)
+                1+({trace.signals_aligned}×0.08)
               </span>
             </div>
 
@@ -157,29 +161,29 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
             {/* Pre-Smooth */}
             <div className="flex-1 min-w-[82px] bg-gray-900/50 border border-gray-800 rounded p-2.5 flex flex-col items-center">
               <span className="text-[7px] text-gray-500 uppercase mb-1">Pre-Smooth</span>
-              <span className="text-base font-black text-white font-mono">{preSmooth.toFixed(1)}</span>
+              <span className="text-base font-black text-white font-mono">{trace.pre_smooth_score.toFixed(1)}</span>
               <span className="text-[7px] text-gray-600 uppercase mt-1">cap 100</span>
             </div>
 
             <span className="text-gray-700 text-[9px] font-mono">EMA↓</span>
 
-            {/* Prev Score */}
+            {/* Prev Score — was missing, required to verify EMA output */}
             <div className="flex-1 min-w-[82px] bg-gray-900/30 border border-gray-700/40 rounded p-2.5 flex flex-col items-center">
               <span className="text-[7px] text-gray-500 uppercase mb-1">Prev Score</span>
-              <span className="text-base font-black text-gray-400 font-mono">{previousScore.toFixed(1)}</span>
+              <span className="text-base font-black text-gray-400 font-mono">{trace.previous_score.toFixed(1)}</span>
               <span className="text-[7px] text-gray-600 uppercase mt-1">last tick</span>
             </div>
 
             <span className="text-gray-700 text-[10px]">→</span>
 
             {/* Alpha */}
-            <div className={`flex-1 min-w-[82px] border rounded p-2.5 flex flex-col items-center ${smoothingAlpha === 0.35 ? 'bg-red-500/10 border-red-500/30' : 'bg-emerald-500/10 border-emerald-500/30'}`}>
+            <div className={`flex-1 min-w-[82px] border rounded p-2.5 flex flex-col items-center ${trace.smoothing_alpha === 0.35 ? 'bg-red-500/10 border-red-500/30' : 'bg-emerald-500/10 border-emerald-500/30'}`}>
               <span className="text-[7px] text-gray-500 uppercase mb-1">Alpha α</span>
-              <span className={`text-base font-black font-mono ${smoothingAlpha === 0.35 ? 'text-red-400' : 'text-emerald-400'}`}>
-                {smoothingAlpha}
+              <span className={`text-base font-black font-mono ${trace.smoothing_alpha === 0.35 ? 'text-red-400' : 'text-emerald-400'}`}>
+                {trace.smoothing_alpha}
               </span>
               <span className="text-[7px] text-gray-600 uppercase mt-1">
-                {smoothingAlpha === 0.35 ? 'Fast-Attack' : 'Slow-Decay'}
+                {trace.smoothing_alpha === 0.35 ? 'Fast-Attack' : 'Slow-Decay'}
               </span>
             </div>
 
@@ -188,21 +192,21 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
             {/* Final */}
             <div className="flex-1 min-w-[82px] bg-cyan-400/10 border border-cyan-400/40 rounded p-2.5 flex flex-col items-center shadow-[0_0_15px_rgba(34,211,238,0.1)]">
               <span className="text-[7px] text-cyan-400/80 uppercase mb-1">Final Score</span>
-              <span className="text-base font-black text-white font-mono">{n(trace.final_score, 0)}</span>
+              <span className="text-base font-black text-white font-mono">{trace.final_score}</span>
               <span className="text-[7px] text-cyan-400/60 uppercase mt-1">rounded</span>
             </div>
           </div>
 
-          {/* EMA formula — all values computed through n() so never crash */}
+          {/* EMA written out explicitly — every number visible, fully checkable */}
           <div className="text-[9px] font-mono text-gray-600 bg-gray-900/40 rounded px-3 py-2 border border-gray-800/60">
             <span className="text-gray-500">EMA = </span>
-            <span className="text-gray-300">{smoothingAlpha}</span>
+            <span className="text-gray-300">{trace.smoothing_alpha}</span>
             <span className="text-gray-600"> × </span>
-            <span className="text-gray-300">{preSmooth.toFixed(1)}</span>
+            <span className="text-gray-300">{trace.pre_smooth_score.toFixed(1)}</span>
             <span className="text-gray-600"> + </span>
-            <span className="text-gray-300">{(1 - smoothingAlpha).toFixed(2)}</span>
+            <span className="text-gray-300">{(1 - trace.smoothing_alpha).toFixed(2)}</span>
             <span className="text-gray-600"> × </span>
-            <span className="text-gray-300">{previousScore.toFixed(1)}</span>
+            <span className="text-gray-300">{trace.previous_score.toFixed(1)}</span>
             <span className="text-gray-600"> = </span>
             <span className="text-cyan-400 font-black">{derivedSmoothed.toFixed(2)}</span>
             <span className="text-gray-600"> → round → </span>
@@ -215,7 +219,7 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
         <div className="col-span-12 lg:col-span-6 flex flex-col gap-4">
           <h3 className="text-[8px] text-cyan-400/60 uppercase tracking-widest font-mono">03 · Signal Confidence</h3>
           <div className="grid grid-cols-1 gap-2">
-            {Object.entries(trace.confidence_reasons ?? {}).map(([sigName, reason], i) => {
+            {Object.entries(trace.confidence_reasons).map(([sigName, reason], i) => {
               const sig = signals[sigName];
               return (
                 <div key={i} className="bg-gray-900/30 border border-gray-800/50 rounded-lg p-3 flex items-center justify-between group hover:border-gray-700 transition-all">
@@ -236,6 +240,7 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
         </div>
 
         {/* ── 04: Computation Summary ── */}
+        {/* RENAMED from "Audit Narrative Summary" — it's a plain-text summary of the math, not an audit */}
         <div className="col-span-12 lg:col-span-6 flex flex-col gap-4">
           <h3 className="text-[8px] text-cyan-400/60 uppercase tracking-widest font-mono">04 · Computation Summary</h3>
           <div className="bg-[#151a23] border border-gray-800 rounded-xl p-4 flex-1 shadow-inner relative overflow-hidden group">
@@ -245,7 +250,7 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
               </svg>
             </div>
             <p className="text-[11px] font-mono leading-relaxed text-gray-400 relative z-10">
-              {(trace.audit_narrative || 'No computation summary available.')
+              {trace.audit_narrative
                 .split(/(\d+\.?\d*|STABLE|ELEVATED|STRESSED|UNSTABLE|CRITICAL|HIGH|MEDIUM|LOW)/g)
                 .map((part, i) => {
                   const isNum   = !isNaN(parseFloat(part)) && isFinite(Number(part));
@@ -265,9 +270,7 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
       {/* ── Footer ── */}
       <div className="px-6 py-2 border-t border-gray-800 flex justify-between items-center bg-[#0a0e14]/50">
         <span className="text-[8px] text-gray-700 font-black uppercase tracking-widest font-mono">Sentinel · Score Computation Trace v1.0</span>
-        <span className="text-[8px] text-gray-700 font-mono tracking-tighter">
-          TIMESTAMP: {trace.timestamp ? new Date(trace.timestamp).toISOString() : '--'}
-        </span>
+        <span className="text-[8px] text-gray-700 font-mono tracking-tighter">TIMESTAMP: {new Date(trace.timestamp).toISOString()}</span>
       </div>
     </div>
   );
