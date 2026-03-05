@@ -424,6 +424,13 @@ const App: React.FC = () => {
               {connectionStatus === 'CONNECTED' ? 'STREAMING' : connectionStatus === 'HISTORICAL' ? 'REPLAYING' : 'IDLE'}
             </span>
           </div>
+          {/* FIX [E]: data_quality indicator — shows when Binance feed data is stale/degraded */}
+          {activeTick && activeTick.data_quality !== 'GOOD' && (
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[9px] font-black font-mono uppercase tracking-widest animate-pulse ${activeTick.data_quality === 'STALE' ? 'bg-red-500/10 border-red-500/40 text-red-400' : 'bg-amber-500/10 border-amber-500/40 text-amber-400'}`}>
+              <div className="w-1.5 h-1.5 rounded-full bg-current" />
+              FEED {activeTick.data_quality}
+            </div>
+          )}
         </div>
       </header>
 
@@ -589,7 +596,7 @@ const App: React.FC = () => {
                   {/* Stress velocity badge */}
                   {activeCausal?.active && Math.abs(activeCausal.stress_velocity) > 0.5 && (
                     <span className={`text-[8px] font-black font-mono px-2 py-0.5 rounded uppercase tracking-tight ${activeCausal.stress_velocity > 0 ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'}`}>
-                      {activeCausal.stress_velocity > 0 ? '↑' : '↓'} {Math.abs(activeCausal.stress_velocity).toFixed(1)}pts/tick
+                      {activeCausal.stress_velocity > 0 ? '↑' : '↓'} {Math.abs(activeCausal.stress_velocity).toFixed(1)} pts/s
                     </span>
                   )}
                   <div className="flex items-center gap-1.5">
@@ -623,7 +630,12 @@ const App: React.FC = () => {
                                 {/* Elapsed since catalyst */}
                                 <span className="text-[9px] text-gray-700 font-mono italic">
                                   {step.elapsed_since_catalyst_ms > 0
-                                    ? `+${(step.elapsed_since_catalyst_ms / 1000).toFixed(0)}s`
+                                    ? mode === 'HISTORICAL'
+                                      // FIX [H]: Historical ticks are 1-min klines.
+                                      // elapsed is kline boundary distance, not real seconds.
+                                      // Show "+N candles" to prevent misreading as real signal lag.
+                                      ? `+${Math.round(step.elapsed_since_catalyst_ms / 60000)} candle${Math.round(step.elapsed_since_catalyst_ms / 60000) !== 1 ? 's' : ''}`
+                                      : `+${(step.elapsed_since_catalyst_ms / 1000).toFixed(0)}s`
                                     : new Date(step.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                                 </span>
                               </div>
