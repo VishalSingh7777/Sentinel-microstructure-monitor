@@ -11,6 +11,18 @@ export class BinanceService {
   private bids: [number, number][] = [];
   private asks: [number, number][] = [];
   private recentTrades: Trade[] = [];
+  // Dynamic large-trade threshold — adapts to actual trade-size distribution.
+  // Recalculated each tick as the 90th percentile of recent trade sizes.
+  // At BTC=$95k: typical trades are 0.01-0.1 BTC; genuine blocks are 0.5-5 BTC.
+  // Fixed 0.5 BTC threshold was calibrated at an older, lower BTC price.
+  // With a dynamic threshold, "large" always means top-10% of current activity.
+  private tradeSizeHistory: number[] = []; // rolling 200-trade window
+  // FIX [E]: Staleness detection. Binance book and trade streams are independent
+  // WebSocket connections. During flash crashes or high load, depth updates
+  // can lag behind trade stream. We track last update time for each stream
+  // separately so emitTick can flag stale data_quality honestly.
+  private lastDepthUpdateMs  = 0;
+  private lastTradeUpdateMs  = 0;
   
   private lastExchangeTime = 0;
   private lastReceivedTime = 0;
@@ -74,6 +86,9 @@ export class BinanceService {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
+    this.tradeSizeHistory  = [];
+    this.lastDepthUpdateMs  = 0;
+    this.lastTradeUpdateMs  = 0;
     this.closeSockets();
   }
 
@@ -108,6 +123,7 @@ export class BinanceService {
       };
       this.lastPrice = trade.price;
       this.recentTrades.push(trade);
+      this.lastTradeUpdateMs = Date.now(); // FIX [E]
       
       // Prevent memory overflow on extreme volatility
       if (this.recentTrades.length > 5000) this.recentTrades.splice(0, 1000);
@@ -127,6 +143,7 @@ export class BinanceService {
       const data = JSON.parse(e.data);
       this.bids = data.bids.map((b: any) => [parseFloat(b[0]), parseFloat(b[1])]);
       this.asks = data.asks.map((a: any) => [parseFloat(a[0]), parseFloat(a[1])]);
+      this.lastDepthUpdateMs = Date.now(); // FIX [E]: stamp every real depth update
     };
     this.depthWS.onclose = () => {
       if (this.intervalId) setTimeout(() => this.connectDepth(), 3000);
@@ -149,9 +166,26 @@ export class BinanceService {
       return;
     }
 
-    const buyTrades = this.recentTrades.filter(t => t.side === 'buy');
+    const buyTrades  = this.recentTrades.filter(t => t.side === 'buy');
     const sellTrades = this.recentTrades.filter(t => t.side === 'sell');
-    const largeThreshold = 0.5;
+
+    // Update rolling trade size history (keep last 200 trades for percentile calc)
+    this.recentTrades.forEach(t => this.tradeSizeHistory.push(t.quantity));
+    if (this.tradeSizeHistory.length > 200) {
+      this.tradeSizeHistory = this.tradeSizeHistory.slice(-200);
+    }
+
+    // Dynamic large-trade threshold: 90th percentile of recent trade sizes.
+    // Falls back to 0.5 BTC minimum so signal doesn't trigger on micro-trades
+    // during low-activity sessions when the 90th pct might be tiny.
+    const largeThreshold = (() => {
+      if (this.tradeSizeHistory.length < 10) return 0.5;
+      const sorted  = [...this.tradeSizeHistory].sort((a, b) => a - b);
+      const p90idx  = Math.floor(sorted.length * 0.90);
+      const p90     = sorted[p90idx] ?? 0.5;
+      // Ensure threshold is meaningful: at least 0.5 BTC so we only catch real blocks
+      return Math.max(0.5, p90);
+    })();
 
     const calculateVWAP = (levels: [number, number][]) => {
       let valueSum = 0;
@@ -191,7 +225,16 @@ export class BinanceService {
       spread_bps: spreadBps,
       total_depth: this.bids.reduce((s, b) => s + b[1], 0) + this.asks.reduce((s, a) => s + a[1], 0),
       is_valid: true,
-      data_quality: 'GOOD'
+      // FIX [E]: Detect staleness honestly instead of hardcoding 'GOOD'.
+      // STALE: depth snapshot not refreshed in 2s (Binance high-load lag).
+      // DEGRADED: trade stream silent 3s+ (unusual — possible feed issue).
+      // GOOD: both streams recently updated.
+      data_quality: (() => {
+        const now = Date.now();
+        if (this.lastDepthUpdateMs > 0 && (now - this.lastDepthUpdateMs) > 2_000) return 'STALE';
+        if (this.lastTradeUpdateMs > 0 && (now - this.lastTradeUpdateMs) > 3_000) return 'DEGRADED';
+        return 'GOOD';
+      })() as 'GOOD' | 'DEGRADED' | 'STALE'
     };
 
     this.onTickCallback(tick);

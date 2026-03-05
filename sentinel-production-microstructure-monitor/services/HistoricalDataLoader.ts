@@ -159,8 +159,16 @@ export class HistoricalDataLoader {
     point: HistoricalDataPoint,
     closePrice: number
   ): { id: number; price: number; quantity: number; timestamp: number; side: 'buy' | 'sell' }[] {
-    const BLOCK_THRESHOLD = 15; // BTC per minute — below this, no large blocks
-    if (point.sell_volume < BLOCK_THRESHOLD) return [];
+    // FIX [D]: Make historical large-trade threshold consistent with live detection.
+    // Live BinanceService uses dynamic p90 of last 200 trades (floor: 0.5 BTC).
+    // Historical has no rolling trade stream, so we approximate:
+    //   threshold = max(0.5, sell_volume * 0.05)
+    //   → top 5% of candle sell volume is treated as institutional blocks.
+    // This mirrors p90 semantics (top 10% of trades) while being computationally
+    // feasible on per-candle data. A Forced Selling score of 60 now means the
+    // same thing in replay as it does in live mode.
+    const BLOCK_THRESHOLD = Math.max(0.5, point.sell_volume * 0.05);
+    if (point.sell_volume < BLOCK_THRESHOLD * 2) return []; // need at least 2x threshold
 
     // Institutional portion: top 35% of sell volume treated as block trades
     const institutionalVol = safe(point.sell_volume * 0.35, 0);
