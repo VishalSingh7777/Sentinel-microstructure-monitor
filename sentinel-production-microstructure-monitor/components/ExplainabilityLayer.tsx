@@ -42,11 +42,21 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
     return 'text-gray-500 bg-gray-500/10';
   };
 
-  // Re-derive the EMA so we can verify it matches what the engine computed
+  // ── Math verification ──────────────────────────────────────────────────────
+  // Re-derive EMA to verify the engine's output matches independent calculation.
   const derivedSmoothed = trace.smoothing_alpha * trace.pre_smooth_score +
                           (1 - trace.smoothing_alpha) * trace.previous_score;
   const derivedFinal = Math.round(derivedSmoothed);
-  const verified = derivedFinal === trace.final_score;
+
+  // FIX [A]: Also verify shock multiplier matches the SHOCK_TABLE.
+  // OLD: ExplainabilityLayer showed "1+(N×0.08)" but engine uses SHOCK_TABLE.
+  // This caused the displayed formula to differ from the actual computation.
+  // Now we verify the recorded multiplier against the true table and flag mismatches.
+  const SHOCK_TABLE_CLIENT: readonly number[] = [1.00, 1.00, 1.15, 1.35, 1.60];
+  const expectedShock = SHOCK_TABLE_CLIENT[trace.signals_aligned] ?? 1.00;
+  // Allow ±0.001 tolerance for floating-point rounding
+  const shockVerified = Math.abs(trace.shock_multiplier - expectedShock) < 0.001;
+  const verified = derivedFinal === trace.final_score && shockVerified;
 
   return (
     <div className="bg-[#0d1117] border border-gray-800 rounded-xl overflow-hidden flex flex-col shadow-2xl animate-in fade-in duration-500">
@@ -152,7 +162,7 @@ export const ExplainabilityLayer: React.FC<ExplainabilityLayerProps> = ({ trace,
                 {trace.shock_multiplier.toFixed(2)}×
               </span>
               <span className="text-[7px] text-gray-600 uppercase mt-1">
-                1+({trace.signals_aligned}×0.08)
+                TABLE[{trace.signals_aligned}]
               </span>
             </div>
 
