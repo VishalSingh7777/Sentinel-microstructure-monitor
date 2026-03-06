@@ -13,7 +13,6 @@ import { SignalCard }         from './components/SignalCard';
 import { TimelineChart }      from './components/TimelineChart';
 import { HistoricalDataLoader, HistoricalDataPoint } from './services/HistoricalDataLoader';
 import { ExplainabilityLayer } from './components/ExplainabilityLayer';
-import { OracleTriggerButton } from './components/OracleIntelligence';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends React.Component<
@@ -579,12 +578,7 @@ const App: React.FC = () => {
           <div className="grid grid-cols-12 gap-4 h-[960px] min-h-[960px] max-h-[960px] overflow-hidden">
 
             {/* ── Causality Engine ── */}
-            <OracleTriggerButton 
-              snapshot={snapshotEvent?.snapshot ?? null} 
-              stressScore={activeStress?.score ?? 0} 
-            />
-            
-           <div className="col-span-12 lg:col-span-5 bg-[#151a23] border border-gray-800 rounded-xl p-5 flex flex-col overflow-hidden relative shadow-lg">
+            <div className="col-span-12 lg:col-span-5 bg-[#151a23] border border-gray-800 rounded-xl p-5 flex flex-col overflow-hidden relative shadow-lg">
               <div className="flex justify-between items-center mb-4">
                 <div className="flex flex-col gap-0.5">
                   <h2 className="text-[11px] font-black text-amber-500 uppercase tracking-[0.3em] flex items-center gap-2">
