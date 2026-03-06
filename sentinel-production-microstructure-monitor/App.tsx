@@ -589,7 +589,7 @@ const App: React.FC = () => {
                 <OracleTriggerButton
                   snapshot={snapshotEvent?.snapshot ?? null}
                   stressScore={activeStress?.score ?? 0}
-                  />
+                />
                 
               </div>
               
