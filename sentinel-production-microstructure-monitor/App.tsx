@@ -12,8 +12,7 @@ import { StressGauge }       from './components/StressGauge';
 import { SignalCard }         from './components/SignalCard';
 import { TimelineChart }      from './components/TimelineChart';
 import { HistoricalDataLoader, HistoricalDataPoint } from './services/HistoricalDataLoader';
-import { ExplainabilityLayer }  from './components/ExplainabilityLayer';
-import { OracleTriggerButton }  from './components/OracleIntelligence';
+import { ExplainabilityLayer } from './components/ExplainabilityLayer';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 class ErrorBoundary extends React.Component<
@@ -77,8 +76,6 @@ const App: React.FC = () => {
   // Cleared by "Return to Live" button which causes React to immediately re-point
   // all active* variables back to the live state stream.
   const [snapshotEvent, setSnapshotEvent]   = useState<CriticalEvent | null>(null);
-  // Oracle: latest MarketSnapshot — sent to Claude Haiku when Oracle button clicked
-  const [currentSnapshot, setCurrentSnapshot] = useState<MarketSnapshot | null>(null);
 
   // ── Active variable pattern ─────────────────────────────────────────────────
   // These are what every display component reads.
@@ -130,7 +127,6 @@ const App: React.FC = () => {
     };
     const enriched: CriticalEvent = { ...event, snapshot };
     setCriticalLog(prev => [enriched, ...prev].slice(0, 100));
-    setCurrentSnapshot(snapshot); // Oracle: keep latest snapshot hot for the AI button
   }, []);
 
   const removeIncident = useCallback((id: string) => {
@@ -603,11 +599,6 @@ const App: React.FC = () => {
                       {activeCausal.stress_velocity > 0 ? '↑' : '↓'} {Math.abs(activeCausal.stress_velocity).toFixed(1)} pts/s
                     </span>
                   )}
-                  {/* ── ORACLE AI ANALYSIS BUTTON ── */}
-                  <OracleTriggerButton
-                    snapshot={currentSnapshot}
-                    stressScore={activeStress?.score ?? 0}
-                  />
                   <div className="flex items-center gap-1.5">
                     <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/80" />
                     <span className="text-[8px] text-gray-600 font-mono uppercase tracking-widest">Temporal Matrix</span>
