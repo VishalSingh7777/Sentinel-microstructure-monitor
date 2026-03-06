@@ -10,7 +10,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // WARNING: Do not commit this file to any public repo.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const ANTHROPIC_API_KEY = "YOUR_KEY_HERE";
+const ANTHROPIC_API_KEY = "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";
 const MODEL             = "claude-haiku-4-5-20251001";
 const RATE_LIMIT_MS     = 13_000; // 5 calls/min → 1 per 13s with buffer
 
