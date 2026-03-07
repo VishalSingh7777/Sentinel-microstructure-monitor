@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ResponsiveContainer, ComposedChart, Area, Line, 
   XAxis, YAxis, CartesianGrid, Tooltip, ReferenceArea, ReferenceLine 
@@ -31,14 +31,23 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
     Math.ceil(maxPrice + pricePadding)
   ];
 
-  // Explicit XAxis domain — never use ['dataMin','dataMax'] with type="number".
-  // If all timestamps are equal (e.g. during a reset transition), dataMin===dataMax
-  // → getNiceTickValues(t,t,n) → step=0 → invariant(step>0) crash.
-  // +1ms fallback guarantees domain[0] < domain[1] unconditionally.
+  // Explicit XAxis domain — ['dataMin','dataMax'] on type="number" collapses to
+  // [t,t] when all timestamps are equal (reset transition) → step=0 → invariant crash.
   const tss = cleanData.map(d => d.timestamp);
   const minTs = tss.length > 0 ? Math.min(...tss) : 0;
   const maxTs = tss.length > 0 ? Math.max(...tss) : 1;
   const tsDomain: [number, number] = [minTs, maxTs > minTs ? maxTs : minTs + 1];
+
+  // Defer ResponsiveContainer mount until after first DOM commit.
+  // ResponsiveContainer's internal ResizeObserver fires synchronously during
+  // React 19's render phase when width=0 → getNiceTickValues(0,0,n) → step=0
+  // → invariant(step>0) → "Invariant failed" crash.
+  // By only mounting it after useEffect (post-commit), the layout is already
+  // in the DOM with real pixel dimensions before ResizeObserver ever fires.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [mounted, setMounted] = useState(false);
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useEffect(() => { setMounted(true); }, []);
 
     // Guard: recharts XAxis with domain=['dataMin','dataMax'] gets [t,t] when only
   // 1 point exists. getNiceTickValues(t,t) computes step=0 → t/0=Infinity →
@@ -56,10 +65,8 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
       <h2 className={`${TYPOGRAPHY.h2} mb-4 text-gray-400 text-sm tracking-widest uppercase`}>
         Market Structure vs. Price
       </h2>
-      <ResponsiveContainer width="100%" height="90%">
-        {({ width, height }: { width: number; height: number }) =>
-          width > 0 && height > 0 ? (
-          <ComposedChart width={width} height={height} data={cleanData}>
+      {mounted && <ResponsiveContainer width="100%" height="90%">
+        <ComposedChart data={cleanData}>
           <defs>
             <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#4b5563" stopOpacity={0.3} />
@@ -154,9 +161,7 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
             />
           )}
         </ComposedChart>
-          ) : <div />
-        }
-      </ResponsiveContainer>
+      </ResponsiveContainer>}
     </div>
   );
 };
