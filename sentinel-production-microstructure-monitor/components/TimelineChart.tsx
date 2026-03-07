@@ -31,7 +31,16 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
     Math.ceil(maxPrice + pricePadding)
   ];
 
-  // Guard: recharts XAxis with domain=['dataMin','dataMax'] gets [t,t] when only
+  // Explicit XAxis domain — never use ['dataMin','dataMax'] with type="number".
+  // If all timestamps are equal (e.g. during a reset transition), dataMin===dataMax
+  // → getNiceTickValues(t,t,n) → step=0 → invariant(step>0) crash.
+  // +1ms fallback guarantees domain[0] < domain[1] unconditionally.
+  const tss = cleanData.map(d => d.timestamp);
+  const minTs = tss.length > 0 ? Math.min(...tss) : 0;
+  const maxTs = tss.length > 0 ? Math.max(...tss) : 1;
+  const tsDomain: [number, number] = [minTs, maxTs > minTs ? maxTs : minTs + 1];
+
+    // Guard: recharts XAxis with domain=['dataMin','dataMax'] gets [t,t] when only
   // 1 point exists. getNiceTickValues(t,t) computes step=0 → t/0=Infinity →
   // invariant(isFinite(step)) throws "Invariant failed". Require ≥2 points.
   if (cleanData.length < 2) {
@@ -47,8 +56,10 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
       <h2 className={`${TYPOGRAPHY.h2} mb-4 text-gray-400 text-sm tracking-widest uppercase`}>
         Market Structure vs. Price
       </h2>
-      <ResponsiveContainer width="100%" height="90%" debounce={50}>
-        <ComposedChart data={cleanData}>
+      <ResponsiveContainer width="100%" height="90%">
+        {({ width, height }: { width: number; height: number }) =>
+          width > 0 && height > 0 ? (
+          <ComposedChart width={width} height={height} data={cleanData}>
           <defs>
             <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#4b5563" stopOpacity={0.3} />
@@ -61,7 +72,7 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
           <XAxis 
             dataKey="timestamp" 
             type="number" 
-            domain={['dataMin', 'dataMax']}
+            domain={tsDomain}
             tickFormatter={(t) => new Date(t).toLocaleTimeString([], { hour12: false, minute: '2-digit', second: '2-digit' })}
             stroke="#4b5563"
             fontSize={10}
@@ -143,6 +154,8 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
             />
           )}
         </ComposedChart>
+          ) : <div />
+        }
       </ResponsiveContainer>
     </div>
   );
