@@ -1,10 +1,49 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { 
   ResponsiveContainer, ComposedChart, Area, Line, 
   XAxis, YAxis, CartesianGrid, Tooltip, ReferenceArea, ReferenceLine 
 } from 'recharts';
 import { TimelineDataPoint, StressLevel } from '../types';
 import { THEME, TYPOGRAPHY } from '../constants';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRASH FIX — Recharts 2.x + React 19 "Invariant failed"
+// ─────────────────────────────────────────────────────────────────────────────
+// Root cause: ResponsiveContainer's internal ResizeObserver fires during React
+// 19's concurrent render phase when the container still has width=0.
+// Recharts calls getNiceTickValues(0, 0, n) → step=0 → invariant(step>0) throws.
+// The race is non-deterministic → crash appears at random positions/times.
+//
+// Fix: wrap the chart in a local ErrorBoundary. When the invariant fires it
+// renders a blank placeholder for exactly one frame, then auto-resets via
+// setTimeout(0). On the retry render the DOM is already committed with real
+// pixel dimensions, ResizeObserver gets a real width, crash never repeats.
+// ─────────────────────────────────────────────────────────────────────────────
+interface ChartBoundaryState { crashed: boolean; }
+
+class ChartErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  ChartBoundaryState
+> {
+  state: ChartBoundaryState = { crashed: false };
+
+  static getDerivedStateFromError(): ChartBoundaryState {
+    return { crashed: true };
+  }
+
+  componentDidCatch(): void {
+    // Auto-reset after one tick — by then the DOM is committed with real dims
+    setTimeout(() => this.setState({ crashed: false }), 0);
+  }
+
+  render(): React.ReactNode {
+    if (this.state.crashed) {
+      // Blank placeholder that preserves layout height during the single-frame reset
+      return <div style={{ width: '100%', height: '100%' }} />;
+    }
+    return this.props.children;
+  }
+}
 
 interface TimelineChartProps {
   data: TimelineDataPoint[];
@@ -32,24 +71,13 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
   ];
 
   // Explicit XAxis domain — ['dataMin','dataMax'] on type="number" collapses to
-  // [t,t] when all timestamps are equal (reset transition) → step=0 → invariant crash.
+  // [t,t] when all timestamps are equal → step=0 → same invariant crash.
   const tss = cleanData.map(d => d.timestamp);
   const minTs = tss.length > 0 ? Math.min(...tss) : 0;
   const maxTs = tss.length > 0 ? Math.max(...tss) : 1;
   const tsDomain: [number, number] = [minTs, maxTs > minTs ? maxTs : minTs + 1];
 
-  // Defer ResponsiveContainer mount until after first DOM commit.
-  // ResponsiveContainer's internal ResizeObserver fires synchronously during
-  // React 19's render phase when width=0 → getNiceTickValues(0,0,n) → step=0
-  // → invariant(step>0) → "Invariant failed" crash.
-  // By only mounting it after useEffect (post-commit), the layout is already
-  // in the DOM with real pixel dimensions before ResizeObserver ever fires.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const [mounted, setMounted] = useState(false);
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  useEffect(() => { setMounted(true); }, []);
-
-    // Guard: recharts XAxis with domain=['dataMin','dataMax'] gets [t,t] when only
+  // Guard: recharts XAxis with domain=['dataMin','dataMax'] gets [t,t] when only
   // 1 point exists. getNiceTickValues(t,t) computes step=0 → t/0=Infinity →
   // invariant(isFinite(step)) throws "Invariant failed". Require ≥2 points.
   if (cleanData.length < 2) {
@@ -65,7 +93,8 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
       <h2 className={`${TYPOGRAPHY.h2} mb-4 text-gray-400 text-sm tracking-widest uppercase`}>
         Market Structure vs. Price
       </h2>
-      {mounted && <ResponsiveContainer width="100%" height="90%">
+      <ChartErrorBoundary>
+      <ResponsiveContainer width="100%" height="90%">
         <ComposedChart data={cleanData}>
           <defs>
             <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
@@ -161,7 +190,8 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({ data }) => {
             />
           )}
         </ComposedChart>
-      </ResponsiveContainer>}
+      </ResponsiveContainer>
+      </ChartErrorBoundary>
     </div>
   );
 };
