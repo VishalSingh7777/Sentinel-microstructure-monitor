@@ -575,7 +575,7 @@ const App: React.FC = () => {
           <TimelineChart data={activeTimeline} />
 
           {/* Bottom panels — fixed height, no stretching */}
-          <div className="grid grid-cols-12 gap-4 h-[1040px] min-h-[1040px] max-h-[1040px] overflow-hidden">
+          <div className="grid grid-cols-12 gap-4 h-[1050px] min-h-[1050px] max-h-[1050px] overflow-hidden">
 
             {/* ── Causality Engine ── */}
             <div className="col-span-12 lg:col-span-5 bg-[#151a23] border border-gray-800 rounded-xl p-5 flex flex-col overflow-hidden relative shadow-lg">
