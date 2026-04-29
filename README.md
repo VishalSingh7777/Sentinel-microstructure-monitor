@@ -1,6 +1,3 @@
-# Sentinel-microstructure-monitor
-Bitcoin order book monitor — tracks liquidity depth, order flow imbalance, volatility regime, and large trade activity in real time.
-
 # Sentinel Microstructure Monitor
 
 Sentinel is a browser-based market microstructure monitor for BTC/USDT. It connects to Binance live market streams and tracks structural stress in real time using liquidity depth, order-flow imbalance, volatility expansion, and large sell activity.
@@ -54,6 +51,7 @@ Sentinel is not a price prediction system, not a guaranteed crash detector, not 
 ## Core architecture
 
 ```text
+
 Binance live streams / historical replay
         ↓
 Normalized market tick
@@ -65,6 +63,7 @@ Signal processors
 Weighted stress score
         ↓
 Causal sequence + breach log + explainability UI 
+
 
 ## ⚖️ License
 **All Rights Reserved** © 2026 Sentinel-microstructure-monitor
