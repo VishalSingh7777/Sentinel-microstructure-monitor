@@ -1,5 +1,7 @@
 # Sentinel Microstructure Monitor
 
+🔗 Live Demo: https://sentinelv0.netlify.app/
+
 Sentinel is a browser-based market microstructure monitor for BTC/USDT. It connects to Binance live market streams and tracks structural stress in real time using liquidity depth, order-flow imbalance, volatility expansion, and large sell activity.
 
 It is not a trading bot and it does not execute trades. It is a diagnostic and forensic monitoring interface designed to show when market structure begins to weaken.
